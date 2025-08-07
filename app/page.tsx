@@ -34,34 +34,47 @@ export default function LoginPage() {
   const router = useRouter()
 
   useEffect(() => {
-    // Check if Supabase is configured
-    const checkSupabaseConfig = () => {
-      const hasUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-      const hasKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-      setSupabaseConfigured(!!(hasUrl && hasKey))
-    }
-
-    checkSupabaseConfig()
-
-    // If Supabase is configured, check for existing session
-    if (supabaseConfigured) {
-      const checkUser = async () => {
-        try {
-          const { supabase } = await import("@/lib/supabase")
-          const {
-            data: { session },
-          } = await supabase.auth.getSession()
+    const initializeAuth = async () => {
+      // Check if Supabase is configured by trying to import and use it
+      try {
+        const { supabase } = await import("@/lib/supabase")
+        
+        // Try to get session to verify Supabase is working
+        const { data: { session }, error } = await supabase.auth.getSession()
+        
+        if (error) {
+          console.error("Supabase configuration error:", error)
+          setSupabaseConfigured(false)
+        } else {
+          setSupabaseConfigured(true)
+          
+          // If user is already logged in, redirect to dashboard
           if (session) {
             router.push("/dashboard")
+            return
           }
-        } catch (err) {
-          console.error("Supabase not configured:", err)
-          setSupabaseConfigured(false)
+
+          // Listen for auth changes
+          const {
+            data: { subscription },
+          } = supabase.auth.onAuthStateChange(async (event, session) => {
+            if (event === "SIGNED_OUT" || !session) {
+              // Stay on login page
+            } else if (session) {
+              router.push("/dashboard")
+            }
+          })
+
+          return () => subscription.unsubscribe()
         }
+      } catch (err) {
+        console.error("Supabase import/initialization error:", err)
+        setSupabaseConfigured(false)
       }
-      checkUser()
     }
-  }, [router, supabaseConfigured])
+
+    initializeAuth()
+  }, [router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -172,7 +185,7 @@ export default function LoginPage() {
               <AlertDescription>
                 <strong>Demo Mode:</strong> Supabase not configured. Using local storage for demo purposes.
                 <br />
-                <small>Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to enable full features.</small>
+                <small>Check console for Supabase connection errors.</small>
               </AlertDescription>
             </Alert>
           )}

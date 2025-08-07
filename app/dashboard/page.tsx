@@ -140,50 +140,49 @@ export default function Dashboard() {
 
   useEffect(() => {
     const initializeApp = async () => {
-      // Check if Supabase is configured
-      const hasUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-      const hasKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-      const isConfigured = !!(hasUrl && hasKey)
-      setSupabaseConfigured(isConfigured)
+    try {
+      // Try to import and use Supabase
+      const { supabase } = await import("@/lib/supabase")
+      
+      // Test the connection by getting session
+      const { data: { session }, error } = await supabase.auth.getSession()
+      
+      if (error) {
+        console.error("Supabase configuration error:", error)
+        throw error
+      }
 
-      if (isConfigured) {
-        // Use Supabase authentication
-        try {
-          const { supabase } = await import("@/lib/supabase")
-          const {
-            data: { session },
-          } = await supabase.auth.getSession()
+      // Supabase is working
+      setSupabaseConfigured(true)
 
-          if (!session) {
-            router.push("/")
-            return
-          }
+      if (!session) {
+        router.push("/")
+        return
+      }
 
+      setUser(session.user)
+      await loadProfile(session.user.id)
+      await loadPortfolioFromSupabase(session.user.id)
+
+      // Listen for auth changes
+      const {
+        data: { subscription },
+      } = supabase.auth.onAuthStateChange(async (event, session) => {
+        if (event === "SIGNED_OUT" || !session) {
+          router.push("/")
+        } else if (session) {
           setUser(session.user)
           await loadProfile(session.user.id)
           await loadPortfolioFromSupabase(session.user.id)
-
-          // Listen for auth changes
-          const {
-            data: { subscription },
-          } = supabase.auth.onAuthStateChange(async (event, session) => {
-            if (event === "SIGNED_OUT" || !session) {
-              router.push("/")
-            } else if (session) {
-              setUser(session.user)
-              await loadProfile(session.user.id)
-              await loadPortfolioFromSupabase(session.user.id)
-            }
-          })
-
-          setLoading(false)
-          return () => subscription.unsubscribe()
-        } catch (err) {
-          console.error("Supabase error:", err)
-          setSupabaseConfigured(false)
         }
-      }
+      })
 
+      setLoading(false)
+      return () => subscription.unsubscribe()
+    } catch (err) {
+      console.error("Supabase error:", err)
+      setSupabaseConfigured(false)
+      
       // Fallback to localStorage
       const userData = localStorage.getItem("user")
       if (!userData) {
@@ -196,9 +195,10 @@ export default function Dashboard() {
       loadPortfolioFromLocalStorage()
       setLoading(false)
     }
+  }
 
-    initializeApp()
-  }, [router])
+  initializeApp()
+}, [router])
 
   // Set up auto-refresh interval
   useEffect(() => {
