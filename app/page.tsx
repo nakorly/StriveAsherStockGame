@@ -17,6 +17,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import { RefreshCw, Copy, Check, Eye, EyeOff } from 'lucide-react'
 
 export default function LoginPage() {
   const [email, setEmail] = useState("")
@@ -31,7 +32,17 @@ export default function LoginPage() {
   const [resetError, setResetError] = useState("")
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false)
   const [supabaseConfigured, setSupabaseConfigured] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
+  const [suggestedPassword, setSuggestedPassword] = useState("")
+  const [passwordCopied, setPasswordCopied] = useState(false)
   const router = useRouter()
+
+  // Password strength indicators
+  const [passwordStrength, setPasswordStrength] = useState({
+    score: 0,
+    feedback: "",
+    color: "text-gray-500"
+  })
 
   useEffect(() => {
     const initializeAuth = async () => {
@@ -75,6 +86,117 @@ export default function LoginPage() {
 
     initializeAuth()
   }, [router])
+
+  // Generate strong password
+  const generateStrongPassword = () => {
+    const lowercase = 'abcdefghijklmnopqrstuvwxyz'
+    const uppercase = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    const numbers = '0123456789'
+    const symbols = '!@#$%^&*()_+-=[]{}|;:,.<>?'
+    
+    let password = ''
+    
+    // Ensure at least one character from each category
+    password += lowercase[Math.floor(Math.random() * lowercase.length)]
+    password += uppercase[Math.floor(Math.random() * uppercase.length)]
+    password += numbers[Math.floor(Math.random() * numbers.length)]
+    password += symbols[Math.floor(Math.random() * symbols.length)]
+    
+    // Fill the rest with random characters from all categories
+    const allChars = lowercase + uppercase + numbers + symbols
+    for (let i = 4; i < 16; i++) {
+      password += allChars[Math.floor(Math.random() * allChars.length)]
+    }
+    
+    // Shuffle the password
+    return password.split('').sort(() => Math.random() - 0.5).join('')
+  }
+
+  // Check password strength
+  const checkPasswordStrength = (pwd: string) => {
+    if (!pwd) {
+      setPasswordStrength({ score: 0, feedback: "", color: "text-gray-500" })
+      return
+    }
+
+    let score = 0
+    let feedback = []
+
+    // Length check
+    if (pwd.length >= 8) score += 1
+    else feedback.push("at least 8 characters")
+
+    // Lowercase check
+    if (/[a-z]/.test(pwd)) score += 1
+    else feedback.push("lowercase letters")
+
+    // Uppercase check
+    if (/[A-Z]/.test(pwd)) score += 1
+    else feedback.push("uppercase letters")
+
+    // Number check
+    if (/\d/.test(pwd)) score += 1
+    else feedback.push("numbers")
+
+    // Symbol check
+    if (/[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]/.test(pwd)) score += 1
+    else feedback.push("special characters")
+
+    let strengthText = ""
+    let color = ""
+
+    if (score <= 2) {
+      strengthText = "Weak"
+      color = "text-red-500"
+    } else if (score <= 3) {
+      strengthText = "Fair"
+      color = "text-yellow-500"
+    } else if (score <= 4) {
+      strengthText = "Good"
+      color = "text-blue-500"
+    } else {
+      strengthText = "Strong"
+      color = "text-green-500"
+    }
+
+    const feedbackText = feedback.length > 0 
+      ? `Add: ${feedback.join(", ")}`
+      : "Password meets all requirements"
+
+    setPasswordStrength({
+      score,
+      feedback: `${strengthText} - ${feedbackText}`,
+      color
+    })
+  }
+
+  // Handle password change
+  const handlePasswordChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newPassword = e.target.value
+    setPassword(newPassword)
+    if (!isLogin) {
+      checkPasswordStrength(newPassword)
+    }
+  }
+
+  // Use suggested password
+  const useSuggestedPassword = () => {
+    const newPassword = generateStrongPassword()
+    setSuggestedPassword(newPassword)
+    setPassword(newPassword)
+    checkPasswordStrength(newPassword)
+  }
+
+  // Copy password to clipboard
+  const copyPassword = async (passwordToCopy: string) => {
+    try {
+      await navigator.clipboard.writeText(passwordToCopy)
+      setPasswordCopied(true)
+      setTimeout(() => setPasswordCopied(false), 2000)
+    } catch (err) {
+      console.error('Failed to copy password:', err)
+    }
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -170,6 +292,15 @@ export default function LoginPage() {
     }
   }
 
+  // Reset password strength when switching between login/signup
+  useEffect(() => {
+    if (isLogin) {
+      setPasswordStrength({ score: 0, feedback: "", color: "text-gray-500" })
+    } else if (password) {
+      checkPasswordStrength(password)
+    }
+  }, [isLogin, password])
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <Card className="w-full max-w-md">
@@ -206,15 +337,112 @@ export default function LoginPage() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                disabled={loading}
-                minLength={6}
-              />
+              <div className="relative">
+                <Input
+                  id="password"
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={handlePasswordChange}
+                  required
+                  disabled={loading}
+                  minLength={6}
+                  className="pr-10"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
+                  onClick={() => setShowPassword(!showPassword)}
+                  disabled={loading}
+                >
+                  {showPassword ? (
+                    <EyeOff className="h-4 w-4 text-gray-400" />
+                  ) : (
+                    <Eye className="h-4 w-4 text-gray-400" />
+                  )}
+                </Button>
+              </div>
+              
+              {/* Password strength indicator for signup */}
+              {!isLogin && password && (
+                <div className="text-sm">
+                  <div className={`font-medium ${passwordStrength.color}`}>
+                    {passwordStrength.feedback}
+                  </div>
+                  <div className="flex mt-1 space-x-1">
+                    {[1, 2, 3, 4, 5].map((level) => (
+                      <div
+                        key={level}
+                        className={`h-1 w-full rounded ${
+                          level <= passwordStrength.score
+                            ? passwordStrength.score <= 2
+                              ? "bg-red-500"
+                              : passwordStrength.score <= 3
+                              ? "bg-yellow-500"
+                              : passwordStrength.score <= 4
+                              ? "bg-blue-500"
+                              : "bg-green-500"
+                            : "bg-gray-200"
+                        }`}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Strong password suggestion for signup */}
+              {!isLogin && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={useSuggestedPassword}
+                      disabled={loading}
+                      className="text-xs"
+                    >
+                      <RefreshCw className="h-3 w-3 mr-1" />
+                      Suggest Strong Password
+                    </Button>
+                    {password && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => copyPassword(password)}
+                        disabled={loading}
+                        className="text-xs"
+                      >
+                        {passwordCopied ? (
+                          <Check className="h-3 w-3 mr-1 text-green-500" />
+                        ) : (
+                          <Copy className="h-3 w-3 mr-1" />
+                        )}
+                        {passwordCopied ? "Copied!" : "Copy"}
+                      </Button>
+                    )}
+                  </div>
+                  
+                  {suggestedPassword && suggestedPassword !== password && (
+                    <Alert>
+                      <AlertDescription className="text-xs">
+                        <strong>Suggested:</strong> {suggestedPassword}
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => copyPassword(suggestedPassword)}
+                          className="ml-2 h-6 px-2 text-xs"
+                        >
+                          <Copy className="h-3 w-3" />
+                        </Button>
+                      </AlertDescription>
+                    </Alert>
+                  )}
+                </div>
+              )}
             </div>
 
             {error && (
