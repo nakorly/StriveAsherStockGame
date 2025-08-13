@@ -6,7 +6,17 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { Search, TrendingUp, TrendingDown, LogOut, Loader2, DollarSign, ShoppingCart, RefreshCw } from 'lucide-react'
+import {
+  Search,
+  TrendingUp,
+  TrendingDown,
+  LogOut,
+  Loader2,
+  DollarSign,
+  ShoppingCart,
+  RefreshCw,
+  Clock,
+} from "lucide-react"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
   Dialog,
@@ -19,6 +29,8 @@ import {
 import { Label } from "@/components/ui/label"
 import type { User } from "@supabase/supabase-js"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import { SellStockDialog } from "@/components/sell-stock-dialog"
+import { QueuedOrders } from "@/components/queued-orders"
 
 interface Stock {
   id: string
@@ -46,16 +58,33 @@ interface Profile {
   balance: number
 }
 
+interface QueuedOrder {
+  id: string
+  symbol: string
+  name: string
+  order_type: "BUY" | "SELL"
+  shares: number
+  order_price: number
+  status: "PENDING" | "EXECUTED" | "CANCELLED"
+  created_at: string
+  executed_at?: string
+  execution_price?: number
+  portfolio_id?: string
+}
+
 export default function Dashboard() {
   const [user, setUser] = useState<User | any>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
   const [portfolio, setPortfolio] = useState<Stock[]>([])
+  const [queuedOrders, setQueuedOrders] = useState<QueuedOrder[]>([])
   const [searchQuery, setSearchQuery] = useState("")
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [isSearching, setIsSearching] = useState(false)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [isBuyDialogOpen, setIsBuyDialogOpen] = useState(false)
+  const [isSellDialogOpen, setIsSellDialogOpen] = useState(false)
   const [selectedStock, setSelectedStock] = useState<SearchResult | null>(null)
+  const [selectedStockForSale, setSelectedStockForSale] = useState<Stock | null>(null)
   const [selectedStockPrice, setSelectedStockPrice] = useState<number>(0)
   const [sharesToBuy, setSharesToBuy] = useState<number>(1)
   const [loading, setLoading] = useState(true)
@@ -63,162 +92,606 @@ export default function Dashboard() {
   const [error, setError] = useState("")
   const [supabaseConfigured, setSupabaseConfigured] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null)
+  const [marketStatus, setMarketStatus] = useState<{
+    isOpen: boolean
+    nextEvent: string
+    timeUntil: string
+  }>({ isOpen: false, nextEvent: "", timeUntil: "" })
   const router = useRouter()
 
-  // Auto-refresh prices every 5 minutes
-  const AUTO_REFRESH_INTERVAL = 5 * 60 * 1000 // 5 minutes
+  // Session timeout - 24 hours
+  const SESSION_TIMEOUT = 24 * 60 * 60 * 1000 // 24 hours in milliseconds
 
-  const updateStockPrices = useCallback(async (showLoading = true) => {
-    if (!user || portfolio.length === 0) return
+  // Market hours (Eastern Time)
+  const getMarketStatus = () => {
+    const now = new Date()
+    const easternTime = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }))
+    const day = easternTime.getDay() // 0 = Sunday, 6 = Saturday
+    const hours = easternTime.getHours()
+    const minutes = easternTime.getMinutes()
+    const currentTime = hours * 60 + minutes // Convert to minutes since midnight
 
-    if (showLoading) setRefreshing(true)
-    
-    try {
-      const updatedPortfolio = [...portfolio]
-      let hasUpdates = false
+    // Market hours: 9:30 AM - 4:00 PM ET, Monday-Friday
+    const marketOpen = 9 * 60 + 30 // 9:30 AM
+    const marketClose = 16 * 60 // 4:00 PM
 
-      for (let i = 0; i < updatedPortfolio.length; i++) {
-        const stock = updatedPortfolio[i]
-        try {
-          const response = await fetch(`/api/stock-quote?symbol=${stock.symbol}`)
-          const data = await response.json()
+    const isWeekday = day >= 1 && day <= 5
+    const isMarketHours = currentTime >= marketOpen && currentTime < marketClose
+    const isOpen = isWeekday && isMarketHours
 
-          if (data.quote) {
-            const newPrice = Number.parseFloat(data.quote.price)
-            const newChange = Number.parseFloat(data.quote.change)
-            const newChangePercent = Number.parseFloat(data.quote.changePercent)
-            
-            // Only update if price has changed
-            if (newPrice !== stock.price) {
-              updatedPortfolio[i] = {
-                ...stock,
-                price: newPrice,
-                change: newChange,
-                change_percent: newChangePercent,
-                total_value: stock.shares * newPrice,
-              }
-              hasUpdates = true
+    let nextEvent = ""
+    let timeUntil = ""
 
-              if (supabaseConfigured) {
-                try {
-                  const { supabase } = await import("@/lib/supabase")
-                  await supabase
-                    .from("portfolios")
-                    .update({
-                      price: newPrice,
-                      change: newChange,
-                      change_percent: newChangePercent,
-                      total_value: updatedPortfolio[i].total_value,
-                    })
-                    .eq("id", stock.id)
-                } catch (err) {
-                  console.error("Error updating stock in Supabase:", err)
-                }
-              }
-            }
-          }
-        } catch (error) {
-          console.error(`Error updating ${stock.symbol}:`, error)
-        }
+    if (isWeekday) {
+      if (currentTime < marketOpen) {
+        // Market opens today
+        nextEvent = "Market opens"
+        const minutesUntil = marketOpen - currentTime
+        timeUntil = formatTimeUntil(minutesUntil)
+      } else if (currentTime < marketClose) {
+        // Market closes today
+        nextEvent = "Market closes"
+        const minutesUntil = marketClose - currentTime
+        timeUntil = formatTimeUntil(minutesUntil)
+      } else {
+        // Market opens tomorrow (or Monday if Friday)
+        nextEvent = day === 5 ? "Market opens Monday" : "Market opens tomorrow"
+        const minutesUntilMidnight = 24 * 60 - currentTime
+        const minutesUntilOpen =
+          day === 5 ? minutesUntilMidnight + 2 * 24 * 60 + marketOpen : minutesUntilMidnight + marketOpen
+        timeUntil = formatTimeUntil(minutesUntilOpen)
       }
-
-      if (hasUpdates) {
-        setPortfolio(updatedPortfolio)
-        
-        if (!supabaseConfigured) {
-          localStorage.setItem("portfolio", JSON.stringify(updatedPortfolio))
-        }
-      }
-
-      setLastRefresh(new Date())
-    } catch (error) {
-      console.error("Error updating stock prices:", error)
-    } finally {
-      if (showLoading) setRefreshing(false)
+    } else {
+      // Weekend
+      nextEvent = "Market opens Monday"
+      const daysUntilMonday = day === 0 ? 1 : 8 - day // Sunday = 1 day, Saturday = 2 days
+      const minutesUntilMonday = daysUntilMonday * 24 * 60 - currentTime + marketOpen
+      timeUntil = formatTimeUntil(minutesUntilMonday)
     }
-  }, [user, portfolio, supabaseConfigured])
 
-  useEffect(() => {
-    const initializeApp = async () => {
-    try {
-      // Try to import and use Supabase
-      const { supabase } = await import("@/lib/supabase")
-      
-      // Test the connection by getting session
-      const { data: { session }, error } = await supabase.auth.getSession()
-      
-      if (error) {
-        console.error("Supabase configuration error:", error)
-        throw error
-      }
+    return { isOpen, nextEvent, timeUntil }
+  }
 
-      // Supabase is working
-      setSupabaseConfigured(true)
+  const formatTimeUntil = (minutes: number) => {
+    const hours = Math.floor(minutes / 60)
+    const mins = minutes % 60
+    const days = Math.floor(hours / 24)
+    const remainingHours = hours % 24
 
-      if (!session) {
-        router.push("/")
-        return
-      }
-
-      setUser(session.user)
-      await loadProfile(session.user.id)
-      await loadPortfolioFromSupabase(session.user.id)
-
-      // Listen for auth changes
-      const {
-        data: { subscription },
-      } = supabase.auth.onAuthStateChange(async (event, session) => {
-        if (event === "SIGNED_OUT" || !session) {
-          router.push("/")
-        } else if (session) {
-          setUser(session.user)
-          await loadProfile(session.user.id)
-          await loadPortfolioFromSupabase(session.user.id)
-        }
-      })
-
-      setLoading(false)
-      return () => subscription.unsubscribe()
-    } catch (err) {
-      console.error("Supabase error:", err)
-      setSupabaseConfigured(false)
-      
-      // Fallback to localStorage
-      const userData = localStorage.getItem("user")
-      if (!userData) {
-        router.push("/")
-        return
-      }
-
-      setUser(JSON.parse(userData))
-      loadProfileFromLocalStorage()
-      loadPortfolioFromLocalStorage()
-      setLoading(false)
+    if (days > 0) {
+      return `${days}d ${remainingHours}h ${mins}m`
+    } else if (hours > 0) {
+      return `${hours}h ${mins}m`
+    } else {
+      return `${mins}m`
     }
   }
 
-  initializeApp()
-}, [router])
+  // Check session timeout
+  const checkSessionTimeout = useCallback(() => {
+    const lastActivity = localStorage.getItem("lastActivity")
+    if (lastActivity) {
+      const timeSinceLastActivity = Date.now() - Number.parseInt(lastActivity)
+      if (timeSinceLastActivity > SESSION_TIMEOUT) {
+        // Session expired, logout user
+        handleLogout()
+        return false
+      }
+    }
+    // Update last activity
+    localStorage.setItem("lastActivity", Date.now().toString())
+    return true
+  }, [])
 
-  // Set up auto-refresh interval
+  // Execute queued orders when market opens
+  const executeQueuedOrders = useCallback(async () => {
+    if (!user || !marketStatus.isOpen) return
+
+    const pendingOrders = queuedOrders.filter((order) => order.status === "PENDING")
+    if (pendingOrders.length === 0) return
+
+    console.log(`Market opened - executing ${pendingOrders.length} queued orders`)
+
+    for (const order of pendingOrders) {
+      try {
+        // Get current stock price
+        const response = await fetch(`/api/stock-quote?symbol=${order.symbol}`)
+        const data = await response.json()
+
+        if (data.quote) {
+          const currentPrice = Number.parseFloat(data.quote.price)
+
+          if (order.order_type === "BUY") {
+            await executeBuyOrder(order, currentPrice, data.quote)
+          } else {
+            await executeSellOrder(order, currentPrice, data.quote)
+          }
+        }
+      } catch (error) {
+        console.error(`Error executing order ${order.id}:`, error)
+      }
+    }
+
+    // Reload data after executing orders
+    if (supabaseConfigured) {
+      await loadProfile(user.id)
+      await loadPortfolioFromSupabase(user.id)
+      await loadQueuedOrders(user.id)
+    } else {
+      loadProfileFromLocalStorage()
+      loadPortfolioFromLocalStorage()
+      loadQueuedOrdersFromLocalStorage()
+    }
+  }, [user, marketStatus.isOpen, queuedOrders, supabaseConfigured])
+
+  const executeBuyOrder = async (order: QueuedOrder, currentPrice: number, quoteData: any) => {
+    const totalCost = currentPrice * order.shares
+
+    if (supabaseConfigured) {
+      const { supabase } = await import("@/lib/supabase")
+
+      // Check if user has sufficient balance
+      const { data: profileData } = await supabase.from("profiles").select("balance").eq("id", user.id).single()
+
+      if (!profileData || profileData.balance < totalCost) {
+        // Cancel order due to insufficient funds
+        await supabase.from("queued_orders").update({ status: "CANCELLED" }).eq("id", order.id)
+        return
+      }
+
+      // Check if we already own this stock
+      const { data: existingStock } = await supabase
+        .from("portfolios")
+        .select("*")
+        .eq("user_id", user.id)
+        .eq("symbol", order.symbol)
+        .single()
+
+      if (existingStock) {
+        // Update existing position
+        const newShares = existingStock.shares + order.shares
+        const newTotalValue = newShares * currentPrice
+        const avgPurchasePrice =
+          (existingStock.purchase_price * existingStock.shares + currentPrice * order.shares) / newShares
+
+        await supabase
+          .from("portfolios")
+          .update({
+            shares: newShares,
+            price: currentPrice,
+            change: Number.parseFloat(quoteData.change),
+            change_percent: Number.parseFloat(quoteData.changePercent),
+            purchase_price: avgPurchasePrice,
+            total_value: newTotalValue,
+          })
+          .eq("id", existingStock.id)
+      } else {
+        // Create new position
+        await supabase.from("portfolios").insert({
+          user_id: user.id,
+          symbol: order.symbol,
+          name: order.name,
+          price: currentPrice,
+          change: Number.parseFloat(quoteData.change),
+          change_percent: Number.parseFloat(quoteData.changePercent),
+          shares: order.shares,
+          purchase_price: currentPrice,
+          total_value: totalCost,
+        })
+      }
+
+      // Update user balance
+      await supabase
+        .from("profiles")
+        .update({ balance: profileData.balance - totalCost })
+        .eq("id", user.id)
+
+      // Mark order as executed
+      await supabase
+        .from("queued_orders")
+        .update({
+          status: "EXECUTED",
+          executed_at: new Date().toISOString(),
+          execution_price: currentPrice,
+        })
+        .eq("id", order.id)
+    } else {
+      // localStorage fallback
+      const profile = JSON.parse(localStorage.getItem("profile") || "{}")
+      if (profile.balance < totalCost) return
+
+      const portfolio = JSON.parse(localStorage.getItem("portfolio") || "[]")
+      const existingStockIndex = portfolio.findIndex((s: Stock) => s.symbol === order.symbol)
+
+      if (existingStockIndex >= 0) {
+        // Update existing position
+        const existingStock = portfolio[existingStockIndex]
+        const newShares = existingStock.shares + order.shares
+        const avgPurchasePrice =
+          (existingStock.purchase_price * existingStock.shares + currentPrice * order.shares) / newShares
+
+        portfolio[existingStockIndex] = {
+          ...existingStock,
+          shares: newShares,
+          price: currentPrice,
+          change: Number.parseFloat(quoteData.change),
+          change_percent: Number.parseFloat(quoteData.changePercent),
+          purchase_price: avgPurchasePrice,
+          total_value: newShares * currentPrice,
+        }
+      } else {
+        // Add new position
+        portfolio.push({
+          id: crypto.randomUUID(),
+          symbol: order.symbol,
+          name: order.name,
+          price: currentPrice,
+          change: Number.parseFloat(quoteData.change),
+          change_percent: Number.parseFloat(quoteData.changePercent),
+          shares: order.shares,
+          purchase_price: currentPrice,
+          total_value: totalCost,
+          added_at: new Date().toISOString(),
+        })
+      }
+
+      // Update balance and save
+      profile.balance -= totalCost
+      localStorage.setItem("portfolio", JSON.stringify(portfolio))
+      localStorage.setItem("profile", JSON.stringify(profile))
+
+      // Update queued order
+      const orders = JSON.parse(localStorage.getItem("queuedOrders") || "[]")
+      const orderIndex = orders.findIndex((o: QueuedOrder) => o.id === order.id)
+      if (orderIndex >= 0) {
+        orders[orderIndex] = {
+          ...orders[orderIndex],
+          status: "EXECUTED",
+          executed_at: new Date().toISOString(),
+          execution_price: currentPrice,
+        }
+        localStorage.setItem("queuedOrders", JSON.stringify(orders))
+      }
+    }
+  }
+
+  const executeSellOrder = async (order: QueuedOrder, currentPrice: number, quoteData: any) => {
+    const saleValue = currentPrice * order.shares
+
+    if (supabaseConfigured) {
+      const { supabase } = await import("@/lib/supabase")
+
+      // Find the stock to sell
+      const { data: stockData } = await supabase
+        .from("portfolios")
+        .select("*")
+        .eq("user_id", user.id)
+        .eq("symbol", order.symbol)
+        .single()
+
+      if (!stockData || stockData.shares < order.shares) {
+        // Cancel order - insufficient shares
+        await supabase.from("queued_orders").update({ status: "CANCELLED" }).eq("id", order.id)
+        return
+      }
+
+      if (order.shares === stockData.shares) {
+        // Sell all shares - remove from portfolio
+        await supabase.from("portfolios").delete().eq("id", stockData.id)
+      } else {
+        // Partial sale - update shares
+        const remainingShares = stockData.shares - order.shares
+        const newTotalValue = remainingShares * currentPrice
+
+        await supabase
+          .from("portfolios")
+          .update({
+            shares: remainingShares,
+            price: currentPrice,
+            change: Number.parseFloat(quoteData.change),
+            change_percent: Number.parseFloat(quoteData.changePercent),
+            total_value: newTotalValue,
+          })
+          .eq("id", stockData.id)
+      }
+
+      // Update user balance
+      const { data: profileData } = await supabase.from("profiles").select("balance").eq("id", user.id).single()
+
+      if (profileData) {
+        await supabase
+          .from("profiles")
+          .update({ balance: profileData.balance + saleValue })
+          .eq("id", user.id)
+      }
+
+      // Mark order as executed
+      await supabase
+        .from("queued_orders")
+        .update({
+          status: "EXECUTED",
+          executed_at: new Date().toISOString(),
+          execution_price: currentPrice,
+        })
+        .eq("id", order.id)
+    } else {
+      // localStorage fallback
+      const portfolio = JSON.parse(localStorage.getItem("portfolio") || "[]")
+      const stockIndex = portfolio.findIndex((s: Stock) => s.symbol === order.symbol)
+
+      if (stockIndex < 0 || portfolio[stockIndex].shares < order.shares) return
+
+      const profile = JSON.parse(localStorage.getItem("profile") || "{}")
+
+      if (order.shares === portfolio[stockIndex].shares) {
+        // Remove stock completely
+        portfolio.splice(stockIndex, 1)
+      } else {
+        // Update shares
+        const remainingShares = portfolio[stockIndex].shares - order.shares
+        portfolio[stockIndex] = {
+          ...portfolio[stockIndex],
+          shares: remainingShares,
+          price: currentPrice,
+          change: Number.parseFloat(quoteData.change),
+          change_percent: Number.parseFloat(quoteData.changePercent),
+          total_value: remainingShares * currentPrice,
+        }
+      }
+
+      // Update balance and save
+      profile.balance += saleValue
+      localStorage.setItem("portfolio", JSON.stringify(portfolio))
+      localStorage.setItem("profile", JSON.stringify(profile))
+
+      // Update queued order
+      const orders = JSON.parse(localStorage.getItem("queuedOrders") || "[]")
+      const orderIndex = orders.findIndex((o: QueuedOrder) => o.id === order.id)
+      if (orderIndex >= 0) {
+        orders[orderIndex] = {
+          ...orders[orderIndex],
+          status: "EXECUTED",
+          executed_at: new Date().toISOString(),
+          execution_price: currentPrice,
+        }
+        localStorage.setItem("queuedOrders", JSON.stringify(orders))
+      }
+    }
+  }
+
+  // Update stock prices based on market events
+  const updateStockPrices = useCallback(
+    async (showLoading = true) => {
+      if (!user || portfolio.length === 0) return
+
+      if (showLoading) setRefreshing(true)
+
+      try {
+        const updatedPortfolio = [...portfolio]
+        let hasUpdates = false
+
+        for (let i = 0; i < updatedPortfolio.length; i++) {
+          const stock = updatedPortfolio[i]
+          try {
+            const response = await fetch(`/api/stock-quote?symbol=${stock.symbol}`)
+            const data = await response.json()
+
+            if (data.quote) {
+              const newPrice = Number.parseFloat(data.quote.price)
+              const newChange = Number.parseFloat(data.quote.change)
+              const newChangePercent = Number.parseFloat(data.quote.changePercent)
+
+              // Only update if price has changed
+              if (newPrice !== stock.price) {
+                updatedPortfolio[i] = {
+                  ...stock,
+                  price: newPrice,
+                  change: newChange,
+                  change_percent: newChangePercent,
+                  total_value: stock.shares * newPrice,
+                }
+                hasUpdates = true
+
+                if (supabaseConfigured) {
+                  try {
+                    const { supabase } = await import("@/lib/supabase")
+                    await supabase
+                      .from("portfolios")
+                      .update({
+                        price: newPrice,
+                        change: newChange,
+                        change_percent: newChangePercent,
+                        total_value: updatedPortfolio[i].total_value,
+                      })
+                      .eq("id", stock.id)
+                  } catch (err) {
+                    console.error("Error updating stock in Supabase:", err)
+                  }
+                }
+              }
+            }
+          } catch (error) {
+            console.error(`Error updating ${stock.symbol}:`, error)
+          }
+        }
+
+        if (hasUpdates) {
+          setPortfolio(updatedPortfolio)
+
+          if (!supabaseConfigured) {
+            localStorage.setItem("portfolio", JSON.stringify(updatedPortfolio))
+          }
+        }
+
+        setLastRefresh(new Date())
+      } catch (error) {
+        console.error("Error updating stock prices:", error)
+      } finally {
+        if (showLoading) setRefreshing(false)
+      }
+    },
+    [user, portfolio, supabaseConfigured],
+  )
+
+  // Schedule market-based updates and order execution
+  const scheduleMarketUpdates = useCallback(() => {
+    const now = new Date()
+    const easternTime = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }))
+    const currentMinutes = easternTime.getHours() * 60 + easternTime.getMinutes()
+
+    // Market open: 9:30 AM ET (570 minutes)
+    // Market close: 4:00 PM ET (960 minutes)
+    const marketOpen = 9 * 60 + 30
+    const marketClose = 16 * 60
+
+    const scheduleUpdate = (targetMinutes: number, label: string, callback: () => void) => {
+      let msUntilTarget
+
+      if (currentMinutes <= targetMinutes) {
+        // Target is today
+        msUntilTarget = (targetMinutes - currentMinutes) * 60 * 1000
+      } else {
+        // Target is tomorrow
+        msUntilTarget = (24 * 60 - currentMinutes + targetMinutes) * 60 * 1000
+      }
+
+      setTimeout(() => {
+        console.log(`${label} - executing callback`)
+        callback()
+      }, msUntilTarget)
+    }
+
+    // Schedule market open (execute orders + update prices)
+    scheduleUpdate(marketOpen, "Market Open", () => {
+      executeQueuedOrders()
+      updateStockPrices(false)
+    })
+
+    // Schedule market close (update prices)
+    scheduleUpdate(marketClose, "Market Close", () => {
+      updateStockPrices(false)
+    })
+  }, [executeQueuedOrders, updateStockPrices])
+
   useEffect(() => {
-    if (portfolio.length === 0) return
+    const initializeApp = async () => {
+      // Check session timeout first
+      if (!checkSessionTimeout()) {
+        return
+      }
 
-    // Initial refresh after loading
-    const initialTimer = setTimeout(() => {
-      updateStockPrices(false)
-    }, 2000)
+      try {
+        // Try to import and use Supabase
+        const { supabase } = await import("@/lib/supabase")
 
-    // Set up recurring refresh
-    const interval = setInterval(() => {
-      updateStockPrices(false)
-    }, AUTO_REFRESH_INTERVAL)
+        // Test the connection by getting session
+        const {
+          data: { session },
+          error,
+        } = await supabase.auth.getSession()
+
+        if (error) {
+          console.error("Supabase configuration error:", error)
+          throw error
+        }
+
+        // Supabase is working
+        setSupabaseConfigured(true)
+
+        if (!session) {
+          router.push("/")
+          return
+        }
+
+        setUser(session.user)
+        await loadProfile(session.user.id)
+        await loadPortfolioFromSupabase(session.user.id)
+        await loadQueuedOrders(session.user.id)
+
+        // Listen for auth changes
+        const {
+          data: { subscription },
+        } = supabase.auth.onAuthStateChange(async (event, session) => {
+          if (event === "SIGNED_OUT" || !session) {
+            router.push("/")
+          } else if (session) {
+            setUser(session.user)
+            await loadProfile(session.user.id)
+            await loadPortfolioFromSupabase(session.user.id)
+            await loadQueuedOrders(session.user.id)
+          }
+        })
+
+        setLoading(false)
+        return () => subscription.unsubscribe()
+      } catch (err) {
+        console.error("Supabase error:", err)
+        setSupabaseConfigured(false)
+
+        // Fallback to localStorage
+        const userData = localStorage.getItem("user")
+        if (!userData) {
+          router.push("/")
+          return
+        }
+
+        setUser(JSON.parse(userData))
+        loadProfileFromLocalStorage()
+        loadPortfolioFromLocalStorage()
+        loadQueuedOrdersFromLocalStorage()
+        setLoading(false)
+      }
+    }
+
+    initializeApp()
+  }, [router, checkSessionTimeout])
+
+  // Update market status every minute
+  useEffect(() => {
+    const updateMarketStatus = () => {
+      const newStatus = getMarketStatus()
+      const wasOpen = marketStatus.isOpen
+      setMarketStatus(newStatus)
+
+      // If market just opened, execute queued orders
+      if (!wasOpen && newStatus.isOpen) {
+        executeQueuedOrders()
+      }
+    }
+
+    updateMarketStatus() // Initial update
+    const interval = setInterval(updateMarketStatus, 60000) // Update every minute
+
+    return () => clearInterval(interval)
+  }, [marketStatus.isOpen, executeQueuedOrders])
+
+  // Schedule market-based updates
+  useEffect(() => {
+    scheduleMarketUpdates()
+  }, [scheduleMarketUpdates])
+
+  // Activity tracking for session timeout
+  useEffect(() => {
+    const trackActivity = () => {
+      localStorage.setItem("lastActivity", Date.now().toString())
+    }
+
+    // Track various user activities
+    const events = ["mousedown", "mousemove", "keypress", "scroll", "touchstart", "click"]
+    events.forEach((event) => {
+      document.addEventListener(event, trackActivity, true)
+    })
+
+    // Check session timeout every 5 minutes
+    const timeoutCheck = setInterval(checkSessionTimeout, 5 * 60 * 1000)
 
     return () => {
-      clearTimeout(initialTimer)
-      clearInterval(interval)
+      events.forEach((event) => {
+        document.removeEventListener(event, trackActivity, true)
+      })
+      clearInterval(timeoutCheck)
     }
-  }, [portfolio.length, updateStockPrices])
+  }, [checkSessionTimeout])
 
   const loadProfile = async (userId: string) => {
     try {
@@ -276,7 +749,59 @@ export default function Dashboard() {
     }
   }
 
+  const loadQueuedOrders = async (userId: string) => {
+    try {
+      const { supabase } = await import("@/lib/supabase")
+      const { data, error } = await supabase
+        .from("queued_orders")
+        .select("*")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+
+      if (error) {
+        console.error("Error loading queued orders:", error)
+        return
+      }
+
+      setQueuedOrders(data || [])
+    } catch (err) {
+      console.error("Error loading queued orders:", err)
+    }
+  }
+
+  const loadQueuedOrdersFromLocalStorage = () => {
+    const savedOrders = localStorage.getItem("queuedOrders")
+    if (savedOrders) {
+      setQueuedOrders(JSON.parse(savedOrders))
+    }
+  }
+
+  const cancelQueuedOrder = async (orderId: string) => {
+    if (supabaseConfigured) {
+      const { supabase } = await import("@/lib/supabase")
+      const { error } = await supabase.from("queued_orders").update({ status: "CANCELLED" }).eq("id", orderId)
+
+      if (error) {
+        setError("Failed to cancel order")
+        return
+      }
+
+      await loadQueuedOrders(user.id)
+    } else {
+      const orders = JSON.parse(localStorage.getItem("queuedOrders") || "[]")
+      const orderIndex = orders.findIndex((o: QueuedOrder) => o.id === orderId)
+      if (orderIndex >= 0) {
+        orders[orderIndex].status = "CANCELLED"
+        localStorage.setItem("queuedOrders", JSON.stringify(orders))
+        setQueuedOrders(orders)
+      }
+    }
+  }
+
   const handleLogout = async () => {
+    // Clear session tracking
+    localStorage.removeItem("lastActivity")
+
     if (supabaseConfigured) {
       try {
         const { supabase } = await import("@/lib/supabase")
@@ -288,6 +813,7 @@ export default function Dashboard() {
       localStorage.removeItem("user")
       localStorage.removeItem("portfolio")
       localStorage.removeItem("profile")
+      localStorage.removeItem("queuedOrders")
       router.push("/")
     }
   }
@@ -327,11 +853,74 @@ export default function Dashboard() {
     setIsBuyDialogOpen(true)
   }
 
+  const openSellDialog = async (stock: Stock) => {
+    // Get current stock price
+    try {
+      const response = await fetch(`/api/stock-quote?symbol=${stock.symbol}`)
+      const data = await response.json()
+      if (data.quote) {
+        setSelectedStockPrice(Number.parseFloat(data.quote.price))
+      }
+    } catch (error) {
+      console.error("Error fetching stock price:", error)
+      setSelectedStockPrice(stock.price) // Fallback to stored price
+    }
+
+    setSelectedStockForSale(stock)
+    setIsSellDialogOpen(true)
+  }
+
   const buyStock = async () => {
     if (!user || !profile || !selectedStock || sharesToBuy <= 0) return
 
     const totalCost = selectedStockPrice * sharesToBuy
 
+    // If market is closed, queue the order
+    if (!marketStatus.isOpen) {
+      const queuedOrder: QueuedOrder = {
+        id: crypto.randomUUID(),
+        symbol: selectedStock.symbol.toUpperCase(),
+        name: selectedStock.name,
+        order_type: "BUY",
+        shares: sharesToBuy,
+        order_price: selectedStockPrice,
+        status: "PENDING",
+        created_at: new Date().toISOString(),
+      }
+
+      if (supabaseConfigured) {
+        const { supabase } = await import("@/lib/supabase")
+        const { error } = await supabase.from("queued_orders").insert({
+          user_id: user.id,
+          symbol: queuedOrder.symbol,
+          name: queuedOrder.name,
+          order_type: queuedOrder.order_type,
+          shares: queuedOrder.shares,
+          order_price: queuedOrder.order_price,
+          status: queuedOrder.status,
+        })
+
+        if (error) {
+          setError("Failed to queue buy order")
+          return
+        }
+
+        await loadQueuedOrders(user.id)
+      } else {
+        const orders = JSON.parse(localStorage.getItem("queuedOrders") || "[]")
+        orders.push(queuedOrder)
+        localStorage.setItem("queuedOrders", JSON.stringify(orders))
+        setQueuedOrders(orders)
+      }
+
+      setIsBuyDialogOpen(false)
+      setSelectedStock(null)
+      setSharesToBuy(1)
+      setError("")
+      return
+    }
+
+    // Market is open, execute immediately
     if (totalCost > profile.balance) {
       setError("Insufficient funds to complete this purchase")
       return
@@ -474,6 +1063,50 @@ export default function Dashboard() {
     const actualShares = stock.shares || 1
     if (!user || !profile || sharesToSell <= 0 || sharesToSell > actualShares) return
 
+    // If market is closed, queue the order
+    if (!marketStatus.isOpen) {
+      const queuedOrder: QueuedOrder = {
+        id: crypto.randomUUID(),
+        symbol: stock.symbol,
+        name: stock.name,
+        order_type: "SELL",
+        shares: sharesToSell,
+        order_price: selectedStockPrice,
+        status: "PENDING",
+        created_at: new Date().toISOString(),
+        portfolio_id: stock.id,
+      }
+
+      if (supabaseConfigured) {
+        const { supabase } = await import("@/lib/supabase")
+        const { error } = await supabase.from("queued_orders").insert({
+          user_id: user.id,
+          symbol: queuedOrder.symbol,
+          name: queuedOrder.name,
+          order_type: queuedOrder.order_type,
+          shares: queuedOrder.shares,
+          order_price: queuedOrder.order_price,
+          status: queuedOrder.status,
+          portfolio_id: queuedOrder.portfolio_id,
+        })
+
+        if (error) {
+          setError("Failed to queue sell order")
+          return
+        }
+
+        await loadQueuedOrders(user.id)
+      } else {
+        const orders = JSON.parse(localStorage.getItem("queuedOrders") || "[]")
+        orders.push(queuedOrder)
+        localStorage.setItem("queuedOrders", JSON.stringify(orders))
+        setQueuedOrders(orders)
+      }
+
+      return
+    }
+
+    // Market is open, execute immediately
     try {
       const response = await fetch(`/api/stock-quote?symbol=${stock.symbol}`)
       const data = await response.json()
@@ -610,6 +1243,14 @@ export default function Dashboard() {
                 <div className="text-lg font-bold text-green-600">${profile.balance.toLocaleString()}</div>
               </div>
               <div className="flex items-center space-x-2">
+                <div className="text-right text-xs">
+                  <div className={`font-medium ${marketStatus.isOpen ? "text-green-600" : "text-red-600"}`}>
+                    {marketStatus.isOpen ? "🟢 Market Open" : "🔴 Market Closed"}
+                  </div>
+                  <div className="text-gray-500">
+                    {marketStatus.nextEvent} in {marketStatus.timeUntil}
+                  </div>
+                </div>
                 <Button variant="outline" onClick={() => updateStockPrices(true)} disabled={refreshing}>
                   {refreshing ? (
                     <Loader2 className="h-4 w-4 animate-spin mr-2" />
@@ -618,11 +1259,7 @@ export default function Dashboard() {
                   )}
                   Refresh
                 </Button>
-                {lastRefresh && (
-                  <span className="text-xs text-gray-500">
-                    Last: {lastRefresh.toLocaleTimeString()}
-                  </span>
-                )}
+                {lastRefresh && <span className="text-xs text-gray-500">Last: {lastRefresh.toLocaleTimeString()}</span>}
               </div>
               <Button variant="outline" onClick={handleLogout}>
                 <LogOut className="h-4 w-4 mr-2" />
@@ -649,14 +1286,19 @@ export default function Dashboard() {
           </Alert>
         )}
 
-        {/* Auto-refresh indicator */}
-        {portfolio.length > 0 && (
-          <Alert className="mb-6">
-            <AlertDescription>
-              <strong>Auto-refresh enabled:</strong> Stock prices update automatically every 5 minutes to show real-time gains/losses.
-            </AlertDescription>
-          </Alert>
-        )}
+        {/* Market status and order queuing info */}
+        <Alert className="mb-6">
+          <Clock className="h-4 w-4" />
+          <AlertDescription>
+            {marketStatus.isOpen ? <strong>Market is open:</strong> : <strong>Market is closed:</strong>}
+            {marketStatus.isOpen
+              ? " Orders execute immediately."
+              : ` Orders will be queued and executed when market opens. ${marketStatus.nextEvent} in ${marketStatus.timeUntil}.`}
+          </AlertDescription>
+        </Alert>
+
+        {/* Queued Orders */}
+        <QueuedOrders orders={queuedOrders} onCancelOrder={cancelQueuedOrder} marketStatus={marketStatus} />
 
         {/* Account Summary */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
@@ -713,13 +1355,17 @@ export default function Dashboard() {
             <DialogTrigger asChild>
               <Button>
                 <ShoppingCart className="h-4 w-4 mr-2" />
-                Buy Stocks
+                {marketStatus.isOpen ? "Buy Stocks" : "Queue Buy Order"}
               </Button>
             </DialogTrigger>
             <DialogContent className="sm:max-w-md">
               <DialogHeader>
                 <DialogTitle>Search Stocks to Buy</DialogTitle>
-                <DialogDescription>Search for stocks by symbol or company name</DialogDescription>
+                <DialogDescription>
+                  {marketStatus.isOpen
+                    ? "Search for stocks by symbol or company name"
+                    : "Orders will be queued and executed when market opens"}
+                </DialogDescription>
               </DialogHeader>
               <div className="space-y-4">
                 <div className="flex space-x-2">
@@ -749,7 +1395,7 @@ export default function Dashboard() {
                           </div>
                         </div>
                         <Button size="sm" onClick={() => openBuyDialog(result)}>
-                          Buy
+                          {marketStatus.isOpen ? "Buy" : "Queue"}
                         </Button>
                       </div>
                     ))}
@@ -764,13 +1410,25 @@ export default function Dashboard() {
         <Dialog open={isBuyDialogOpen} onOpenChange={setIsBuyDialogOpen}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
-              <DialogTitle>Buy {selectedStock?.symbol}</DialogTitle>
-              <DialogDescription>{selectedStock?.name}</DialogDescription>
+              <DialogTitle>
+                {marketStatus.isOpen ? "Buy" : "Queue Buy Order for"} {selectedStock?.symbol}
+              </DialogTitle>
+              <DialogDescription>
+                {selectedStock?.name}
+                {!marketStatus.isOpen && (
+                  <div className="mt-2 text-orange-600 text-sm">
+                    Market is closed. This order will be executed when market opens.
+                  </div>
+                )}
+              </DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
               <div>
                 <Label>Current Price</Label>
                 <div className="text-2xl font-bold">${selectedStockPrice.toFixed(2)}</div>
+                {!marketStatus.isOpen && (
+                  <div className="text-xs text-gray-500">Reference price - actual execution price may vary</div>
+                )}
               </div>
               <div>
                 <Label htmlFor="shares">Number of Shares</Label>
@@ -783,8 +1441,11 @@ export default function Dashboard() {
                 />
               </div>
               <div>
-                <Label>Total Cost</Label>
+                <Label>Estimated Cost</Label>
                 <div className="text-xl font-bold">${(selectedStockPrice * sharesToBuy).toLocaleString()}</div>
+                {!marketStatus.isOpen && (
+                  <div className="text-xs text-gray-500">Estimated - final cost depends on execution price</div>
+                )}
               </div>
               <div>
                 <Label>Available Cash</Label>
@@ -796,7 +1457,11 @@ export default function Dashboard() {
                   disabled={selectedStockPrice * sharesToBuy > profile.balance}
                   className="flex-1"
                 >
-                  {selectedStockPrice * sharesToBuy > profile.balance ? "Insufficient Funds" : "Buy Shares"}
+                  {selectedStockPrice * sharesToBuy > profile.balance
+                    ? "Insufficient Funds"
+                    : marketStatus.isOpen
+                      ? "Buy Shares"
+                      : "Queue Order"}
                 </Button>
                 <Button variant="outline" onClick={() => setIsBuyDialogOpen(false)}>
                   Cancel
@@ -806,11 +1471,23 @@ export default function Dashboard() {
           </DialogContent>
         </Dialog>
 
+        {/* Sell Stock Dialog */}
+        <SellStockDialog
+          stock={selectedStockForSale}
+          isOpen={isSellDialogOpen}
+          onClose={() => setIsSellDialogOpen(false)}
+          onSell={sellStock}
+          currentPrice={selectedStockPrice}
+        />
+
         {/* Portfolio Table */}
         <Card>
           <CardHeader>
             <CardTitle>Your Portfolio</CardTitle>
-            <CardDescription>Track your stock investments and performance (auto-refreshes every 5 minutes)</CardDescription>
+            <CardDescription>
+              Track your stock investments and performance
+              {marketStatus.isOpen ? " (live trading)" : " (orders will be queued)"}
+            </CardDescription>
           </CardHeader>
           <CardContent>
             {portfolio.length === 0 ? (
@@ -818,7 +1495,7 @@ export default function Dashboard() {
                 <p className="text-gray-500 mb-4">No stocks in your portfolio yet</p>
                 <Button onClick={() => setIsDialogOpen(true)}>
                   <ShoppingCart className="h-4 w-4 mr-2" />
-                  Buy Your First Stock
+                  {marketStatus.isOpen ? "Buy Your First Stock" : "Queue Your First Order"}
                 </Button>
               </div>
             ) : (
@@ -888,10 +1565,10 @@ export default function Dashboard() {
                                 })
                               }
                             >
-                              Buy More
+                              {marketStatus.isOpen ? "Buy More" : "Queue Buy"}
                             </Button>
-                            <Button variant="outline" size="sm" onClick={() => sellStock(stock, shares)}>
-                              Sell All
+                            <Button variant="outline" size="sm" onClick={() => openSellDialog(stock)}>
+                              {marketStatus.isOpen ? "Sell" : "Queue Sell"}
                             </Button>
                           </div>
                         </TableCell>

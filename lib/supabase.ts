@@ -85,6 +85,50 @@ export type Database = {
           created_at?: string
         }
       }
+      queued_orders: {
+        Row: {
+          id: string
+          user_id: string
+          symbol: string
+          name: string
+          order_type: "BUY" | "SELL"
+          shares: number
+          order_price: number | null
+          status: "PENDING" | "EXECUTED" | "CANCELLED"
+          created_at: string
+          executed_at: string | null
+          execution_price: number | null
+          portfolio_id: string | null
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          symbol: string
+          name: string
+          order_type: "BUY" | "SELL"
+          shares: number
+          order_price?: number | null
+          status?: "PENDING" | "EXECUTED" | "CANCELLED"
+          created_at?: string
+          executed_at?: string | null
+          execution_price?: number | null
+          portfolio_id?: string | null
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          symbol?: string
+          name?: string
+          order_type?: "BUY" | "SELL"
+          shares?: number
+          order_price?: number | null
+          status?: "PENDING" | "EXECUTED" | "CANCELLED"
+          created_at?: string
+          executed_at?: string | null
+          execution_price?: number | null
+          portfolio_id?: string | null
+        }
+      }
     }
   }
 }
