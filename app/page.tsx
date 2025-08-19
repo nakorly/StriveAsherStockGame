@@ -17,7 +17,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { RefreshCw, Copy, Check, Eye, EyeOff } from 'lucide-react'
+import { RefreshCw, Copy, Check, Eye, EyeOff } from "lucide-react"
 
 export default function LoginPage() {
   const [email, setEmail] = useState("")
@@ -41,7 +41,7 @@ export default function LoginPage() {
   const [passwordStrength, setPasswordStrength] = useState({
     score: 0,
     feedback: "",
-    color: "text-gray-500"
+    color: "text-gray-500",
   })
 
   useEffect(() => {
@@ -49,16 +49,19 @@ export default function LoginPage() {
       // Check if Supabase is configured by trying to import and use it
       try {
         const { supabase } = await import("@/lib/supabase")
-        
+
         // Try to get session to verify Supabase is working
-        const { data: { session }, error } = await supabase.auth.getSession()
-        
+        const {
+          data: { session },
+          error,
+        } = await supabase.auth.getSession()
+
         if (error) {
           console.error("Supabase configuration error:", error)
           setSupabaseConfigured(false)
         } else {
           setSupabaseConfigured(true)
-          
+
           // If user is already logged in, redirect to dashboard
           if (session) {
             router.push("/dashboard")
@@ -72,7 +75,18 @@ export default function LoginPage() {
             if (event === "SIGNED_OUT" || !session) {
               // Stay on login page
             } else if (session) {
-              router.push("/dashboard")
+              // Check if user is admin
+              const { data: adminRole } = await supabase
+                .from("admin_roles")
+                .select("role")
+                .eq("user_id", session.user?.id)
+                .single()
+
+              if (adminRole) {
+                router.push("/admin")
+              } else {
+                router.push("/dashboard")
+              }
             }
           })
 
@@ -89,27 +103,30 @@ export default function LoginPage() {
 
   // Generate strong password
   const generateStrongPassword = () => {
-    const lowercase = 'abcdefghijklmnopqrstuvwxyz'
-    const uppercase = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-    const numbers = '0123456789'
-    const symbols = '!@#$%^&*()_+-=[]{}|;:,.<>?'
-    
-    let password = ''
-    
+    const lowercase = "abcdefghijklmnopqrstuvwxyz"
+    const uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    const numbers = "0123456789"
+    const symbols = "!@#$%^&*()_+-=[]{}|;:,.<>?"
+
+    let password = ""
+
     // Ensure at least one character from each category
     password += lowercase[Math.floor(Math.random() * lowercase.length)]
     password += uppercase[Math.floor(Math.random() * uppercase.length)]
     password += numbers[Math.floor(Math.random() * numbers.length)]
     password += symbols[Math.floor(Math.random() * symbols.length)]
-    
+
     // Fill the rest with random characters from all categories
     const allChars = lowercase + uppercase + numbers + symbols
     for (let i = 4; i < 16; i++) {
       password += allChars[Math.floor(Math.random() * allChars.length)]
     }
-    
+
     // Shuffle the password
-    return password.split('').sort(() => Math.random() - 0.5).join('')
+    return password
+      .split("")
+      .sort(() => Math.random() - 0.5)
+      .join("")
   }
 
   // Check password strength
@@ -120,7 +137,7 @@ export default function LoginPage() {
     }
 
     let score = 0
-    let feedback = []
+    const feedback = []
 
     // Length check
     if (pwd.length >= 8) score += 1
@@ -139,7 +156,7 @@ export default function LoginPage() {
     else feedback.push("numbers")
 
     // Symbol check
-    if (/[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]/.test(pwd)) score += 1
+    if (/[!@#$%^&*()_+\-=[\]{}|;:,.<>?]/.test(pwd)) score += 1
     else feedback.push("special characters")
 
     let strengthText = ""
@@ -159,14 +176,12 @@ export default function LoginPage() {
       color = "text-green-500"
     }
 
-    const feedbackText = feedback.length > 0 
-      ? `Add: ${feedback.join(", ")}`
-      : "Password meets all requirements"
+    const feedbackText = feedback.length > 0 ? `Add: ${feedback.join(", ")}` : "Password meets all requirements"
 
     setPasswordStrength({
       score,
       feedback: `${strengthText} - ${feedbackText}`,
-      color
+      color,
     })
   }
 
@@ -194,7 +209,7 @@ export default function LoginPage() {
       setPasswordCopied(true)
       setTimeout(() => setPasswordCopied(false), 2000)
     } catch (err) {
-      console.error('Failed to copy password:', err)
+      console.error("Failed to copy password:", err)
     }
   }
 
@@ -220,7 +235,7 @@ export default function LoginPage() {
       const { supabase } = await import("@/lib/supabase")
 
       if (isLogin) {
-        const { error } = await supabase.auth.signInWithPassword({
+        const { error, data } = await supabase.auth.signInWithPassword({
           email,
           password,
         })
@@ -228,7 +243,18 @@ export default function LoginPage() {
         if (error) {
           setError(error.message)
         } else {
-          router.push("/dashboard")
+          // Check if user is admin
+          const { data: adminRole } = await supabase
+            .from("admin_roles")
+            .select("role")
+            .eq("user_id", data.user?.id)
+            .single()
+
+          if (adminRole) {
+            router.push("/admin")
+          } else {
+            router.push("/dashboard")
+          }
         }
       } else {
         const { error } = await supabase.auth.signUp({
@@ -271,7 +297,7 @@ export default function LoginPage() {
     try {
       const { supabase } = await import("@/lib/supabase")
       const { error } = await supabase.auth.resetPasswordForEmail(resetEmail, {
-        redirectTo: `${typeof window !== 'undefined' ? window.location.origin : ''}/reset-password`,
+        redirectTo: `${typeof window !== "undefined" ? window.location.origin : ""}/reset-password`,
       })
 
       if (error) {
@@ -363,13 +389,11 @@ export default function LoginPage() {
                   )}
                 </Button>
               </div>
-              
+
               {/* Password strength indicator for signup */}
               {!isLogin && password && (
                 <div className="text-sm">
-                  <div className={`font-medium ${passwordStrength.color}`}>
-                    {passwordStrength.feedback}
-                  </div>
+                  <div className={`font-medium ${passwordStrength.color}`}>{passwordStrength.feedback}</div>
                   <div className="flex mt-1 space-x-1">
                     {[1, 2, 3, 4, 5].map((level) => (
                       <div
@@ -379,10 +403,10 @@ export default function LoginPage() {
                             ? passwordStrength.score <= 2
                               ? "bg-red-500"
                               : passwordStrength.score <= 3
-                              ? "bg-yellow-500"
-                              : passwordStrength.score <= 4
-                              ? "bg-blue-500"
-                              : "bg-green-500"
+                                ? "bg-yellow-500"
+                                : passwordStrength.score <= 4
+                                  ? "bg-blue-500"
+                                  : "bg-green-500"
                             : "bg-gray-200"
                         }`}
                       />
@@ -401,7 +425,7 @@ export default function LoginPage() {
                       size="sm"
                       onClick={useSuggestedPassword}
                       disabled={loading}
-                      className="text-xs"
+                      className="text-xs bg-transparent"
                     >
                       <RefreshCw className="h-3 w-3 mr-1" />
                       Suggest Strong Password
@@ -424,7 +448,7 @@ export default function LoginPage() {
                       </Button>
                     )}
                   </div>
-                  
+
                   {suggestedPassword && suggestedPassword !== password && (
                     <Alert>
                       <AlertDescription className="text-xs">
@@ -478,11 +502,7 @@ export default function LoginPage() {
               <div className="text-center">
                 <Dialog open={isResetDialogOpen} onOpenChange={setIsResetDialogOpen}>
                   <DialogTrigger asChild>
-                    <button
-                      type="button"
-                      className="text-sm text-gray-600 hover:underline"
-                      disabled={loading}
-                    >
+                    <button type="button" className="text-sm text-gray-600 hover:underline" disabled={loading}>
                       Forgot your password?
                     </button>
                   </DialogTrigger>
