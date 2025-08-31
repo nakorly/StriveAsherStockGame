@@ -38,7 +38,7 @@ export default function LoginPage() {
   const [passwordCopied, setPasswordCopied] = useState(false)
   const router = useRouter()
 
-  // Admin credentials
+  // Admin credentials (hidden from UI)
   const ADMIN_EMAIL = "greencheez@proton.me"
   const ADMIN_PASSWORD = "SecureTrader01!"
 
@@ -117,16 +117,12 @@ export default function LoginPage() {
     initializeAuth()
   }, [router])
 
-  // Don't auto-fill admin credentials anymore
+  // Clear fields when switching modes
   useEffect(() => {
-    if (isAdminMode) {
-      // Clear fields when switching to admin mode
-      setEmail("")
-      setPassword("")
-    } else {
-      setEmail("")
-      setPassword("")
-    }
+    setEmail("")
+    setPassword("")
+    setError("")
+    setMessage("")
   }, [isAdminMode])
 
   // Generate strong password
@@ -241,7 +237,7 @@ export default function LoginPage() {
     }
   }
 
-  // Setup default admin account with proper rate limiting handling and fixed JSON syntax
+  // Setup default admin account
   const setupDefaultAdmin = async () => {
     if (!supabaseConfigured) {
       setError("Supabase configuration required for admin setup")
@@ -305,55 +301,38 @@ export default function LoginPage() {
       // Wait a bit before making the next request
       await new Promise((resolve) => setTimeout(resolve, 2000))
 
-      // Call the setup function
-      const { error: setupError } = await supabase.rpc("create_default_admin", {
-        admin_email: ADMIN_EMAIL,
-        admin_user_id: userId,
+      // Create profile first
+      await supabase.from("profiles").upsert({
+        id: userId,
+        balance: 1000000.0,
       })
 
-      if (setupError) {
-        // If the function doesn't exist, create the admin role directly
-        if (setupError.message.includes("function") || setupError.message.includes("does not exist")) {
-          setMessage("Creating admin role directly...")
+      // Create admin role with proper JSON syntax
+      const { error: adminRoleError } = await supabase.from("admin_roles").upsert({
+        user_id: userId,
+        role: "SUPER_ADMIN",
+        permissions: JSON.stringify(["all"]),
+        created_by: userId,
+      })
 
-          // Create profile first
-          await supabase.from("profiles").upsert({
-            id: userId,
-            balance: 1000000.0,
-          })
-
-          // Create admin role with proper JSON syntax
-          const { error: adminRoleError } = await supabase.from("admin_roles").upsert({
-            user_id: userId,
-            role: "SUPER_ADMIN",
-            permissions: JSON.stringify(["all"]), // Proper JSON string
-            created_by: userId,
-          })
-
-          if (adminRoleError && !adminRoleError.message.includes("duplicate")) {
-            throw adminRoleError
-          }
-
-          // Log the admin creation with proper JSON syntax
-          await supabase.from("admin_activity_log").insert({
-            admin_id: userId,
-            action: "ADMIN_ACCOUNT_CREATED",
-            details: JSON.stringify({
-              // Proper JSON string
-              type: "default_admin",
-              email: ADMIN_EMAIL,
-            }),
-          })
-        } else {
-          throw setupError
-        }
+      if (adminRoleError && !adminRoleError.message.includes("duplicate")) {
+        throw adminRoleError
       }
+
+      // Log the admin creation
+      await supabase.from("admin_activity_log").insert({
+        admin_id: userId,
+        action: "ADMIN_ACCOUNT_CREATED",
+        details: JSON.stringify({
+          type: "default_admin",
+          email: ADMIN_EMAIL,
+        }),
+      })
 
       setMessage(`Admin account setup complete! 
 
 A confirmation email has been sent to the admin email address. 
 Please check the email and confirm the account, then contact the system administrator for login credentials.`)
-      // Don't auto-fill credentials anymore
     } catch (err: any) {
       console.error("Admin setup error:", err)
       if (err.message.includes("7 seconds")) {
@@ -414,6 +393,8 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
         if (error) {
           setError(error.message)
         } else {
+          console.log("Login successful for:", data.user?.email)
+
           // Auto-grant admin role to default admin email on first login
           if (data.user?.email === ADMIN_EMAIL) {
             try {
@@ -425,11 +406,12 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
                 .single()
 
               if (!existingRole) {
-                // Create admin role automatically with proper JSON syntax
+                console.log("Creating admin role for default admin")
+                // Create admin role automatically
                 await supabase.from("admin_roles").insert({
                   user_id: data.user.id,
                   role: "SUPER_ADMIN",
-                  permissions: JSON.stringify(["all"]), // Proper JSON string
+                  permissions: JSON.stringify(["all"]),
                   created_by: data.user.id,
                 })
 
@@ -439,12 +421,11 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
                   balance: 1000000.0,
                 })
 
-                // Log the admin creation with proper JSON syntax
+                // Log the admin creation
                 await supabase.from("admin_activity_log").insert({
                   admin_id: data.user.id,
                   action: "ADMIN_ACCOUNT_CREATED",
                   details: JSON.stringify({
-                    // Proper JSON string
                     type: "auto_grant",
                     email: data.user.email,
                   }),
@@ -455,39 +436,30 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
             }
           }
 
-          if (isAdminMode) {
-            // Check if user actually has admin role
-            const { data: adminRole, error: adminRoleError } = await supabase
-              .from("admin_roles")
-              .select("role")
-              .eq("user_id", data.user?.id)
-              .single()
+          // Always check admin role after login
+          const { data: adminRole, error: adminRoleError } = await supabase
+            .from("admin_roles")
+            .select("role")
+            .eq("user_id", data.user?.id)
+            .single()
 
-            if (adminRoleError) {
-              console.log("Admin role check error:", adminRoleError)
-            }
+          if (adminRoleError) {
+            console.log("Admin role check error:", adminRoleError)
+          }
 
-            if (adminRole) {
-              console.log("Admin role found, redirecting to admin dashboard")
-              router.push("/admin")
-            } else {
-              setError("This account does not have admin privileges. Please contact the system administrator.")
-            }
+          console.log("Admin role found:", adminRole)
+
+          if (adminRole) {
+            console.log("Redirecting to admin dashboard")
+            // Force redirect to admin dashboard
+            window.location.href = "/admin"
+          } else if (isAdminMode) {
+            setError("This account does not have admin privileges. Please contact the system administrator.")
+            setLoading(false)
+            return
           } else {
-            // Check if user is admin and redirect accordingly
-            const { data: adminRole } = await supabase
-              .from("admin_roles")
-              .select("role")
-              .eq("user_id", data.user?.id)
-              .single()
-
-            if (adminRole) {
-              console.log("User is admin, redirecting to admin dashboard")
-              router.push("/admin")
-            } else {
-              console.log("Regular user, redirecting to dashboard")
-              router.push("/dashboard")
-            }
+            console.log("Redirecting to user dashboard")
+            router.push("/dashboard")
           }
         }
       } else {
@@ -649,7 +621,7 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
               <Input
                 id="email"
                 type="email"
-                placeholder={isAdminMode ? ADMIN_EMAIL : "john@example.com"}
+                placeholder="Enter your email address"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
@@ -662,7 +634,7 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
                 <Input
                   id="password"
                   type={showPassword ? "text" : "password"}
-                  placeholder={isAdminMode ? ADMIN_PASSWORD : ""}
+                  placeholder="Enter your password"
                   value={password}
                   onChange={handlePasswordChange}
                   required
@@ -817,7 +789,7 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
                         <Input
                           id="resetEmail"
                           type="email"
-                          placeholder="john@example.com"
+                          placeholder="Enter your email address"
                           value={resetEmail}
                           onChange={(e) => setResetEmail(e.target.value)}
                           required

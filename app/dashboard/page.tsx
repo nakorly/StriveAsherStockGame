@@ -102,8 +102,42 @@ export default function Dashboard() {
   // Session timeout - 24 hours
   const SESSION_TIMEOUT = 24 * 60 * 60 * 1000 // 24 hours in milliseconds
 
-  // Market hours (Eastern Time)
-  const getMarketStatus = () => {
+  // Simulate stock price changes
+  const simulateStockPrice = (currentPrice: number, symbol: string) => {
+    // Create some volatility based on symbol hash for consistency
+    const symbolHash = symbol.split("").reduce((a, b) => a + b.charCodeAt(0), 0)
+    const volatility = 0.02 + (symbolHash % 10) * 0.001 // 2-3% volatility
+
+    // Random walk with slight upward bias
+    const randomChange = (Math.random() - 0.48) * volatility
+    const newPrice = currentPrice * (1 + randomChange)
+
+    // Ensure price doesn't go below $1
+    return Math.max(1, Number(newPrice.toFixed(2)))
+  }
+
+  // Get market status from admin settings or calculate automatically
+  const getMarketStatus = useCallback(async () => {
+    if (supabaseConfigured) {
+      try {
+        const { supabase } = await import("@/lib/supabase")
+        const { data: marketSettings } = await supabase.from("market_settings").select("*").single()
+
+        if (marketSettings?.is_market_open_override !== null) {
+          // Admin has overridden market status
+          const isOpen = marketSettings.is_market_open_override
+          return {
+            isOpen,
+            nextEvent: isOpen ? "Market manually opened" : "Market manually closed",
+            timeUntil: "Admin controlled",
+          }
+        }
+      } catch (err) {
+        console.error("Error fetching market settings:", err)
+      }
+    }
+
+    // Default market hours calculation
     const now = new Date()
     const easternTime = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }))
     const day = easternTime.getDay() // 0 = Sunday, 6 = Saturday
@@ -150,7 +184,7 @@ export default function Dashboard() {
     }
 
     return { isOpen, nextEvent, timeUntil }
-  }
+  }, [supabaseConfigured])
 
   const formatTimeUntil = (minutes: number) => {
     const hours = Math.floor(minutes / 60)
@@ -194,18 +228,46 @@ export default function Dashboard() {
 
     for (const order of pendingOrders) {
       try {
-        // Get current stock price
-        const response = await fetch(`/api/stock-quote?symbol=${order.symbol}`)
-        const data = await response.json()
+        // Get current stock price (try real API first, then simulate)
+        let currentPrice = order.order_price || 100
+        let quoteData = {
+          change: 0,
+          changePercent: 0,
+        }
 
-        if (data.quote) {
-          const currentPrice = Number.parseFloat(data.quote.price)
+        try {
+          const response = await fetch(`/api/stock-quote?symbol=${order.symbol}`)
+          const data = await response.json()
 
-          if (order.order_type === "BUY") {
-            await executeBuyOrder(order, currentPrice, data.quote)
+          if (data.quote) {
+            currentPrice = Number.parseFloat(data.quote.price)
+            quoteData = {
+              change: Number.parseFloat(data.quote.change),
+              changePercent: Number.parseFloat(data.quote.changePercent),
+            }
           } else {
-            await executeSellOrder(order, currentPrice, data.quote)
+            // Simulate price if API fails
+            currentPrice = simulateStockPrice(order.order_price || 100, order.symbol)
+            const priceChange = currentPrice - (order.order_price || 100)
+            quoteData = {
+              change: priceChange,
+              changePercent: (priceChange / (order.order_price || 100)) * 100,
+            }
           }
+        } catch (apiError) {
+          console.log("API failed, using simulated price for", order.symbol)
+          currentPrice = simulateStockPrice(order.order_price || 100, order.symbol)
+          const priceChange = currentPrice - (order.order_price || 100)
+          quoteData = {
+            change: priceChange,
+            changePercent: (priceChange / (order.order_price || 100)) * 100,
+          }
+        }
+
+        if (order.order_type === "BUY") {
+          await executeBuyOrder(order, currentPrice, quoteData)
+        } else {
+          await executeSellOrder(order, currentPrice, quoteData)
         }
       } catch (error) {
         console.error(`Error executing order ${order.id}:`, error)
@@ -472,46 +534,60 @@ export default function Dashboard() {
 
         for (let i = 0; i < updatedPortfolio.length; i++) {
           const stock = updatedPortfolio[i]
+          let newPrice = stock.price
+          let newChange = stock.change
+          let newChangePercent = stock.change_percent
+
           try {
+            // Try to get real stock data first
             const response = await fetch(`/api/stock-quote?symbol=${stock.symbol}`)
             const data = await response.json()
 
             if (data.quote) {
-              const newPrice = Number.parseFloat(data.quote.price)
-              const newChange = Number.parseFloat(data.quote.change)
-              const newChangePercent = Number.parseFloat(data.quote.changePercent)
-
-              // Only update if price has changed
-              if (newPrice !== stock.price) {
-                updatedPortfolio[i] = {
-                  ...stock,
-                  price: newPrice,
-                  change: newChange,
-                  change_percent: newChangePercent,
-                  total_value: stock.shares * newPrice,
-                }
-                hasUpdates = true
-
-                if (supabaseConfigured) {
-                  try {
-                    const { supabase } = await import("@/lib/supabase")
-                    await supabase
-                      .from("portfolios")
-                      .update({
-                        price: newPrice,
-                        change: newChange,
-                        change_percent: newChangePercent,
-                        total_value: updatedPortfolio[i].total_value,
-                      })
-                      .eq("id", stock.id)
-                  } catch (err) {
-                    console.error("Error updating stock in Supabase:", err)
-                  }
-                }
-              }
+              newPrice = Number.parseFloat(data.quote.price)
+              newChange = Number.parseFloat(data.quote.change)
+              newChangePercent = Number.parseFloat(data.quote.changePercent)
+            } else {
+              // Simulate price if API fails
+              newPrice = simulateStockPrice(stock.price, stock.symbol)
+              newChange = newPrice - stock.price
+              newChangePercent = (newChange / stock.price) * 100
             }
           } catch (error) {
-            console.error(`Error updating ${stock.symbol}:`, error)
+            console.log(`API failed for ${stock.symbol}, simulating price`)
+            // Simulate price if API fails
+            newPrice = simulateStockPrice(stock.price, stock.symbol)
+            newChange = newPrice - stock.price
+            newChangePercent = (newChange / stock.price) * 100
+          }
+
+          // Only update if price has changed
+          if (Math.abs(newPrice - stock.price) > 0.01) {
+            updatedPortfolio[i] = {
+              ...stock,
+              price: newPrice,
+              change: newChange,
+              change_percent: newChangePercent,
+              total_value: stock.shares * newPrice,
+            }
+            hasUpdates = true
+
+            if (supabaseConfigured) {
+              try {
+                const { supabase } = await import("@/lib/supabase")
+                await supabase
+                  .from("portfolios")
+                  .update({
+                    price: newPrice,
+                    change: newChange,
+                    change_percent: newChangePercent,
+                    total_value: updatedPortfolio[i].total_value,
+                  })
+                  .eq("id", stock.id)
+              } catch (err) {
+                console.error("Error updating stock in Supabase:", err)
+              }
+            }
           }
         }
 
@@ -603,6 +679,19 @@ export default function Dashboard() {
           return
         }
 
+        // Check if user is admin and redirect if so
+        const { data: adminRole } = await supabase
+          .from("admin_roles")
+          .select("role")
+          .eq("user_id", session.user?.id)
+          .single()
+
+        if (adminRole) {
+          console.log("User is admin, redirecting to admin dashboard")
+          router.push("/admin")
+          return
+        }
+
         setUser(session.user)
         await loadProfile(session.user.id)
         await loadPortfolioFromSupabase(session.user.id)
@@ -615,6 +704,18 @@ export default function Dashboard() {
           if (event === "SIGNED_OUT" || !session) {
             router.push("/")
           } else if (session) {
+            // Check if user is admin
+            const { data: adminRole } = await supabase
+              .from("admin_roles")
+              .select("role")
+              .eq("user_id", session.user?.id)
+              .single()
+
+            if (adminRole) {
+              router.push("/admin")
+              return
+            }
+
             setUser(session.user)
             await loadProfile(session.user.id)
             await loadPortfolioFromSupabase(session.user.id)
@@ -646,16 +747,23 @@ export default function Dashboard() {
     initializeApp()
   }, [router, checkSessionTimeout])
 
-  // Update market status every minute
+  // Update market status every minute and handle market events
   useEffect(() => {
-    const updateMarketStatus = () => {
-      const newStatus = getMarketStatus()
+    const updateMarketStatus = async () => {
+      const newStatus = await getMarketStatus()
       const wasOpen = marketStatus.isOpen
       setMarketStatus(newStatus)
 
-      // If market just opened, execute queued orders
+      // If market just opened, execute queued orders and update prices
       if (!wasOpen && newStatus.isOpen) {
+        console.log("Market just opened - executing orders and updating prices")
         executeQueuedOrders()
+        updateStockPrices(false)
+      }
+      // If market just closed, update prices
+      else if (wasOpen && !newStatus.isOpen) {
+        console.log("Market just closed - updating prices")
+        updateStockPrices(false)
       }
     }
 
@@ -663,7 +771,7 @@ export default function Dashboard() {
     const interval = setInterval(updateMarketStatus, 60000) // Update every minute
 
     return () => clearInterval(interval)
-  }, [marketStatus.isOpen, executeQueuedOrders])
+  }, [marketStatus.isOpen, executeQueuedOrders, updateStockPrices, getMarketStatus])
 
   // Schedule market-based updates
   useEffect(() => {
@@ -838,15 +946,22 @@ export default function Dashboard() {
     setSelectedStock(stock)
     setSharesToBuy(1)
 
-    // Get current stock price
+    // Get current stock price (try real API first, then simulate)
     try {
       const response = await fetch(`/api/stock-quote?symbol=${stock.symbol}`)
       const data = await response.json()
       if (data.quote) {
         setSelectedStockPrice(Number.parseFloat(data.quote.price))
+      } else {
+        // Simulate price if API fails
+        const simulatedPrice = 50 + Math.random() * 200 // Random price between $50-$250
+        setSelectedStockPrice(Number.parseFloat(simulatedPrice.toFixed(2)))
       }
     } catch (error) {
       console.error("Error fetching stock price:", error)
+      // Simulate price if API fails
+      const simulatedPrice = 50 + Math.random() * 200 // Random price between $50-$250
+      setSelectedStockPrice(Number.parseFloat(simulatedPrice.toFixed(2)))
     }
 
     setIsDialogOpen(false)
@@ -854,16 +969,19 @@ export default function Dashboard() {
   }
 
   const openSellDialog = async (stock: Stock) => {
-    // Get current stock price
+    // Get current stock price (try real API first, then simulate)
     try {
       const response = await fetch(`/api/stock-quote?symbol=${stock.symbol}`)
       const data = await response.json()
       if (data.quote) {
         setSelectedStockPrice(Number.parseFloat(data.quote.price))
+      } else {
+        // Simulate price if API fails
+        setSelectedStockPrice(simulateStockPrice(stock.price, stock.symbol))
       }
     } catch (error) {
       console.error("Error fetching stock price:", error)
-      setSelectedStockPrice(stock.price) // Fallback to stored price
+      setSelectedStockPrice(simulateStockPrice(stock.price, stock.symbol))
     }
 
     setSelectedStockForSale(stock)
@@ -927,132 +1045,162 @@ export default function Dashboard() {
     }
 
     try {
-      const response = await fetch(`/api/stock-quote?symbol=${selectedStock.symbol}`)
-      const data = await response.json()
+      // Try to get real-time price, fallback to simulation
+      let currentPrice = selectedStockPrice
+      let quoteData = {
+        change: 0,
+        changePercent: 0,
+      }
 
-      if (data.quote) {
-        const currentPrice = Number.parseFloat(data.quote.price)
-        const actualTotalCost = currentPrice * sharesToBuy
+      try {
+        const response = await fetch(`/api/stock-quote?symbol=${selectedStock.symbol}`)
+        const data = await response.json()
 
-        if (actualTotalCost > profile.balance) {
-          setError("Insufficient funds to complete this purchase")
+        if (data.quote) {
+          currentPrice = Number.parseFloat(data.quote.price)
+          quoteData = {
+            change: Number.parseFloat(data.quote.change),
+            changePercent: Number.parseFloat(data.quote.changePercent),
+          }
+        } else {
+          // Simulate if API fails
+          currentPrice = simulateStockPrice(selectedStockPrice, selectedStock.symbol)
+          const priceChange = currentPrice - selectedStockPrice
+          quoteData = {
+            change: priceChange,
+            changePercent: (priceChange / selectedStockPrice) * 100,
+          }
+        }
+      } catch (apiError) {
+        console.log("API failed, using simulated price")
+        currentPrice = simulateStockPrice(selectedStockPrice, selectedStock.symbol)
+        const priceChange = currentPrice - selectedStockPrice
+        quoteData = {
+          change: priceChange,
+          changePercent: (priceChange / selectedStockPrice) * 100,
+        }
+      }
+
+      const actualTotalCost = currentPrice * sharesToBuy
+
+      if (actualTotalCost > profile.balance) {
+        setError("Insufficient funds to complete this purchase")
+        return
+      }
+
+      // Check if we already own this stock
+      const existingStock = portfolio.find((stock) => stock.symbol === selectedStock.symbol.toUpperCase())
+
+      if (supabaseConfigured) {
+        const { supabase } = await import("@/lib/supabase")
+
+        if (existingStock) {
+          // Update existing position
+          const newShares = existingStock.shares + sharesToBuy
+          const newTotalValue = newShares * currentPrice
+          const avgPurchasePrice =
+            (existingStock.purchase_price * existingStock.shares + currentPrice * sharesToBuy) / newShares
+
+          const { error: updateError } = await supabase
+            .from("portfolios")
+            .update({
+              shares: newShares,
+              price: currentPrice,
+              change: quoteData.change,
+              change_percent: quoteData.changePercent,
+              purchase_price: avgPurchasePrice,
+              total_value: newTotalValue,
+            })
+            .eq("id", existingStock.id)
+
+          if (updateError) {
+            setError("Failed to update stock position")
+            return
+          }
+        } else {
+          // Create new position
+          const { error: insertError } = await supabase.from("portfolios").insert({
+            user_id: user.id,
+            symbol: selectedStock.symbol.toUpperCase(),
+            name: selectedStock.name,
+            price: currentPrice,
+            change: quoteData.change,
+            change_percent: quoteData.changePercent,
+            shares: sharesToBuy,
+            purchase_price: currentPrice,
+            total_value: actualTotalCost,
+          })
+
+          if (insertError) {
+            setError("Failed to add stock to portfolio")
+            return
+          }
+        }
+
+        // Update user balance
+        const { error: balanceError } = await supabase
+          .from("profiles")
+          .update({ balance: profile.balance - actualTotalCost })
+          .eq("id", user.id)
+
+        if (balanceError) {
+          setError("Failed to update balance")
           return
         }
 
-        // Check if we already own this stock
-        const existingStock = portfolio.find((stock) => stock.symbol === selectedStock.symbol.toUpperCase())
+        // Reload data
+        await loadProfile(user.id)
+        await loadPortfolioFromSupabase(user.id)
+      } else {
+        // localStorage fallback
+        const updatedPortfolio = [...portfolio]
+        const newBalance = profile.balance - actualTotalCost
 
-        if (supabaseConfigured) {
-          const { supabase } = await import("@/lib/supabase")
+        if (existingStock) {
+          // Update existing position
+          const stockIndex = updatedPortfolio.findIndex((s) => s.id === existingStock.id)
+          const newShares = existingStock.shares + sharesToBuy
+          const avgPurchasePrice =
+            (existingStock.purchase_price * existingStock.shares + currentPrice * sharesToBuy) / newShares
 
-          if (existingStock) {
-            // Update existing position
-            const newShares = existingStock.shares + sharesToBuy
-            const newTotalValue = newShares * currentPrice
-            const avgPurchasePrice =
-              (existingStock.purchase_price * existingStock.shares + currentPrice * sharesToBuy) / newShares
-
-            const { error: updateError } = await supabase
-              .from("portfolios")
-              .update({
-                shares: newShares,
-                price: currentPrice,
-                change: Number.parseFloat(data.quote.change),
-                change_percent: Number.parseFloat(data.quote.changePercent),
-                purchase_price: avgPurchasePrice,
-                total_value: newTotalValue,
-              })
-              .eq("id", existingStock.id)
-
-            if (updateError) {
-              setError("Failed to update stock position")
-              return
-            }
-          } else {
-            // Create new position
-            const { error: insertError } = await supabase.from("portfolios").insert({
-              user_id: user.id,
-              symbol: selectedStock.symbol.toUpperCase(),
-              name: selectedStock.name,
-              price: currentPrice,
-              change: Number.parseFloat(data.quote.change),
-              change_percent: Number.parseFloat(data.quote.changePercent),
-              shares: sharesToBuy,
-              purchase_price: currentPrice,
-              total_value: actualTotalCost,
-            })
-
-            if (insertError) {
-              setError("Failed to add stock to portfolio")
-              return
-            }
+          updatedPortfolio[stockIndex] = {
+            ...existingStock,
+            shares: newShares,
+            price: currentPrice,
+            change: quoteData.change,
+            change_percent: quoteData.changePercent,
+            purchase_price: avgPurchasePrice,
+            total_value: newShares * currentPrice,
           }
-
-          // Update user balance
-          const { error: balanceError } = await supabase
-            .from("profiles")
-            .update({ balance: profile.balance - actualTotalCost })
-            .eq("id", user.id)
-
-          if (balanceError) {
-            setError("Failed to update balance")
-            return
-          }
-
-          // Reload data
-          await loadProfile(user.id)
-          await loadPortfolioFromSupabase(user.id)
         } else {
-          // localStorage fallback
-          const updatedPortfolio = [...portfolio]
-          const newBalance = profile.balance - actualTotalCost
-
-          if (existingStock) {
-            // Update existing position
-            const stockIndex = updatedPortfolio.findIndex((s) => s.id === existingStock.id)
-            const newShares = existingStock.shares + sharesToBuy
-            const avgPurchasePrice =
-              (existingStock.purchase_price * existingStock.shares + currentPrice * sharesToBuy) / newShares
-
-            updatedPortfolio[stockIndex] = {
-              ...existingStock,
-              shares: newShares,
-              price: currentPrice,
-              change: Number.parseFloat(data.quote.change),
-              change_percent: Number.parseFloat(data.quote.changePercent),
-              purchase_price: avgPurchasePrice,
-              total_value: newShares * currentPrice,
-            }
-          } else {
-            // Add new position
-            const newStock: Stock = {
-              id: crypto.randomUUID(),
-              symbol: selectedStock.symbol.toUpperCase(),
-              name: selectedStock.name,
-              price: currentPrice,
-              change: Number.parseFloat(data.quote.change),
-              change_percent: Number.parseFloat(data.quote.changePercent),
-              shares: sharesToBuy,
-              purchase_price: currentPrice,
-              total_value: actualTotalCost,
-              added_at: new Date().toISOString(),
-            }
-            updatedPortfolio.push(newStock)
+          // Add new position
+          const newStock: Stock = {
+            id: crypto.randomUUID(),
+            symbol: selectedStock.symbol.toUpperCase(),
+            name: selectedStock.name,
+            price: currentPrice,
+            change: quoteData.change,
+            change_percent: quoteData.changePercent,
+            shares: sharesToBuy,
+            purchase_price: currentPrice,
+            total_value: actualTotalCost,
+            added_at: new Date().toISOString(),
           }
-
-          setPortfolio(updatedPortfolio)
-          const updatedProfile = { ...profile, balance: newBalance }
-          setProfile(updatedProfile)
-
-          localStorage.setItem("portfolio", JSON.stringify(updatedPortfolio))
-          localStorage.setItem("profile", JSON.stringify(updatedProfile))
+          updatedPortfolio.push(newStock)
         }
 
-        setIsBuyDialogOpen(false)
-        setSelectedStock(null)
-        setSharesToBuy(1)
-        setError("")
+        setPortfolio(updatedPortfolio)
+        const updatedProfile = { ...profile, balance: newBalance }
+        setProfile(updatedProfile)
+
+        localStorage.setItem("portfolio", JSON.stringify(updatedPortfolio))
+        localStorage.setItem("profile", JSON.stringify(updatedProfile))
       }
+
+      setIsBuyDialogOpen(false)
+      setSelectedStock(null)
+      setSharesToBuy(1)
+      setError("")
     } catch (error) {
       setError("Error buying stock")
       console.error("Error buying stock:", error)
@@ -1108,93 +1256,123 @@ export default function Dashboard() {
 
     // Market is open, execute immediately
     try {
-      const response = await fetch(`/api/stock-quote?symbol=${stock.symbol}`)
-      const data = await response.json()
+      // Try to get real-time price, fallback to simulation
+      let currentPrice = selectedStockPrice
+      let quoteData = {
+        change: 0,
+        changePercent: 0,
+      }
 
-      if (data.quote) {
-        const currentPrice = Number.parseFloat(data.quote.price)
-        const saleValue = currentPrice * sharesToSell
+      try {
+        const response = await fetch(`/api/stock-quote?symbol=${stock.symbol}`)
+        const data = await response.json()
 
-        if (supabaseConfigured) {
-          const { supabase } = await import("@/lib/supabase")
-
-          if (sharesToSell === stock.shares) {
-            // Sell all shares - remove from portfolio
-            const { error: deleteError } = await supabase.from("portfolios").delete().eq("id", stock.id)
-
-            if (deleteError) {
-              setError("Failed to sell stock")
-              return
-            }
-          } else {
-            // Partial sale - update shares
-            const remainingShares = stock.shares - sharesToSell
-            const newTotalValue = remainingShares * currentPrice
-
-            const { error: updateError } = await supabase
-              .from("portfolios")
-              .update({
-                shares: remainingShares,
-                price: currentPrice,
-                change: Number.parseFloat(data.quote.change),
-                change_percent: Number.parseFloat(data.quote.changePercent),
-                total_value: newTotalValue,
-              })
-              .eq("id", stock.id)
-
-            if (updateError) {
-              setError("Failed to update stock position")
-              return
-            }
+        if (data.quote) {
+          currentPrice = Number.parseFloat(data.quote.price)
+          quoteData = {
+            change: Number.parseFloat(data.quote.change),
+            changePercent: Number.parseFloat(data.quote.changePercent),
           }
+        } else {
+          // Simulate if API fails
+          currentPrice = simulateStockPrice(stock.price, stock.symbol)
+          const priceChange = currentPrice - stock.price
+          quoteData = {
+            change: priceChange,
+            changePercent: (priceChange / stock.price) * 100,
+          }
+        }
+      } catch (apiError) {
+        console.log("API failed, using simulated price")
+        currentPrice = simulateStockPrice(stock.price, stock.symbol)
+        const priceChange = currentPrice - stock.price
+        quoteData = {
+          change: priceChange,
+          changePercent: (priceChange / stock.price) * 100,
+        }
+      }
 
-          // Update user balance
-          const { error: balanceError } = await supabase
-            .from("profiles")
-            .update({ balance: profile.balance + saleValue })
-            .eq("id", user.id)
+      const saleValue = currentPrice * sharesToSell
 
-          if (balanceError) {
-            setError("Failed to update balance")
+      if (supabaseConfigured) {
+        const { supabase } = await import("@/lib/supabase")
+
+        if (sharesToSell === stock.shares) {
+          // Sell all shares - remove from portfolio
+          const { error: deleteError } = await supabase.from("portfolios").delete().eq("id", stock.id)
+
+          if (deleteError) {
+            setError("Failed to sell stock")
             return
           }
-
-          // Reload data
-          await loadProfile(user.id)
-          await loadPortfolioFromSupabase(user.id)
         } else {
-          // localStorage fallback
-          let updatedPortfolio = [...portfolio]
-          const newBalance = profile.balance + saleValue
+          // Partial sale - update shares
+          const remainingShares = stock.shares - sharesToSell
+          const newTotalValue = remainingShares * currentPrice
 
-          if (sharesToSell === stock.shares) {
-            // Remove stock completely
-            updatedPortfolio = updatedPortfolio.filter((s) => s.id !== stock.id)
-          } else {
-            // Update shares
-            const stockIndex = updatedPortfolio.findIndex((s) => s.id === stock.id)
-            const remainingShares = stock.shares - sharesToSell
-
-            updatedPortfolio[stockIndex] = {
-              ...stock,
+          const { error: updateError } = await supabase
+            .from("portfolios")
+            .update({
               shares: remainingShares,
               price: currentPrice,
-              change: Number.parseFloat(data.quote.change),
-              change_percent: Number.parseFloat(data.quote.changePercent),
-              total_value: remainingShares * currentPrice,
-            }
+              change: quoteData.change,
+              change_percent: quoteData.changePercent,
+              total_value: newTotalValue,
+            })
+            .eq("id", stock.id)
+
+          if (updateError) {
+            setError("Failed to update stock position")
+            return
           }
-
-          setPortfolio(updatedPortfolio)
-          const updatedProfile = { ...profile, balance: newBalance }
-          setProfile(updatedProfile)
-
-          localStorage.setItem("portfolio", JSON.stringify(updatedPortfolio))
-          localStorage.setItem("profile", JSON.stringify(updatedProfile))
         }
 
-        setError("")
+        // Update user balance
+        const { error: balanceError } = await supabase
+          .from("profiles")
+          .update({ balance: profile.balance + saleValue })
+          .eq("id", user.id)
+
+        if (balanceError) {
+          setError("Failed to update balance")
+          return
+        }
+
+        // Reload data
+        await loadProfile(user.id)
+        await loadPortfolioFromSupabase(user.id)
+      } else {
+        // localStorage fallback
+        let updatedPortfolio = [...portfolio]
+        const newBalance = profile.balance + saleValue
+
+        if (sharesToSell === stock.shares) {
+          // Remove stock completely
+          updatedPortfolio = updatedPortfolio.filter((s) => s.id !== stock.id)
+        } else {
+          // Update shares
+          const stockIndex = updatedPortfolio.findIndex((s) => s.id === stock.id)
+          const remainingShares = stock.shares - sharesToSell
+
+          updatedPortfolio[stockIndex] = {
+            ...stock,
+            shares: remainingShares,
+            price: currentPrice,
+            change: quoteData.change,
+            change_percent: quoteData.changePercent,
+            total_value: remainingShares * currentPrice,
+          }
+        }
+
+        setPortfolio(updatedPortfolio)
+        const updatedProfile = { ...profile, balance: newBalance }
+        setProfile(updatedProfile)
+
+        localStorage.setItem("portfolio", JSON.stringify(updatedPortfolio))
+        localStorage.setItem("profile", JSON.stringify(updatedProfile))
       }
+
+      setError("")
     } catch (error) {
       setError("Error selling stock")
       console.error("Error selling stock:", error)
@@ -1292,7 +1470,7 @@ export default function Dashboard() {
           <AlertDescription>
             {marketStatus.isOpen ? <strong>Market is open:</strong> : <strong>Market is closed:</strong>}
             {marketStatus.isOpen
-              ? " Orders execute immediately."
+              ? " Orders execute immediately. Stock prices update in real-time."
               : ` Orders will be queued and executed when market opens. ${marketStatus.nextEvent} in ${marketStatus.timeUntil}.`}
           </AlertDescription>
         </Alert>

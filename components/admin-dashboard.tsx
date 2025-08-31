@@ -249,6 +249,16 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
         details: newSettings,
       })
 
+      // If market status was changed, trigger stock price updates for all users
+      if (newSettings.is_market_open_override !== undefined) {
+        try {
+          // Call a function to update all stock prices
+          await supabase.rpc("update_all_stock_prices")
+        } catch (priceUpdateError) {
+          console.warn("Could not update stock prices:", priceUpdateError)
+        }
+      }
+
       await loadMarketSettings()
       setError("")
     } catch (err) {
@@ -530,9 +540,9 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
               </Card>
 
               <Card>
-                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium">Market Status</CardTitle>
-                  <Clock className="h-4 w-4 text-muted-foreground" />
+                <CardHeader>
+                  <CardTitle>Market Status</CardTitle>
+                  <CardDescription>Configure trading hours and market status</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold">
