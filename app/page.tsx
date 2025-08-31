@@ -17,13 +17,14 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { RefreshCw, Copy, Check, Eye, EyeOff } from "lucide-react"
+import { RefreshCw, Copy, Check, Eye, EyeOff, Shield, User } from "lucide-react"
 
 export default function LoginPage() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [resetEmail, setResetEmail] = useState("")
   const [isLogin, setIsLogin] = useState(true)
+  const [isAdminMode, setIsAdminMode] = useState(false)
   const [loading, setLoading] = useState(false)
   const [resetLoading, setResetLoading] = useState(false)
   const [message, setMessage] = useState("")
@@ -36,6 +37,10 @@ export default function LoginPage() {
   const [suggestedPassword, setSuggestedPassword] = useState("")
   const [passwordCopied, setPasswordCopied] = useState(false)
   const router = useRouter()
+
+  // Admin credentials
+  const ADMIN_EMAIL = "greencheez@proton.me"
+  const ADMIN_PASSWORD = "SecureTrader01!"
 
   // Password strength indicators
   const [passwordStrength, setPasswordStrength] = useState({
@@ -62,9 +67,20 @@ export default function LoginPage() {
         } else {
           setSupabaseConfigured(true)
 
-          // If user is already logged in, redirect to dashboard
+          // If user is already logged in, redirect to appropriate dashboard
           if (session) {
-            router.push("/dashboard")
+            // Check if user is admin
+            const { data: adminRole } = await supabase
+              .from("admin_roles")
+              .select("role")
+              .eq("user_id", session.user?.id)
+              .single()
+
+            if (adminRole) {
+              router.push("/admin")
+            } else {
+              router.push("/dashboard")
+            }
             return
           }
 
@@ -100,6 +116,18 @@ export default function LoginPage() {
 
     initializeAuth()
   }, [router])
+
+  // Don't auto-fill admin credentials anymore
+  useEffect(() => {
+    if (isAdminMode) {
+      // Clear fields when switching to admin mode
+      setEmail("")
+      setPassword("")
+    } else {
+      setEmail("")
+      setPassword("")
+    }
+  }, [isAdminMode])
 
   // Generate strong password
   const generateStrongPassword = () => {
@@ -189,7 +217,7 @@ export default function LoginPage() {
   const handlePasswordChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newPassword = e.target.value
     setPassword(newPassword)
-    if (!isLogin) {
+    if (!isLogin && !isAdminMode) {
       checkPasswordStrength(newPassword)
     }
   }
@@ -213,6 +241,145 @@ export default function LoginPage() {
     }
   }
 
+  // Setup default admin account with proper rate limiting handling and fixed JSON syntax
+  const setupDefaultAdmin = async () => {
+    if (!supabaseConfigured) {
+      setError("Supabase configuration required for admin setup")
+      return
+    }
+
+    setLoading(true)
+    setError("")
+    setMessage("Setting up admin account...")
+
+    try {
+      const { supabase } = await import("@/lib/supabase")
+
+      // First, try to sign up the admin user
+      setMessage("Creating admin account...")
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email: ADMIN_EMAIL,
+        password: ADMIN_PASSWORD,
+      })
+
+      let userId = signUpData?.user?.id
+
+      // Handle different signup scenarios
+      if (signUpError) {
+        if (signUpError.message.includes("already registered")) {
+          setMessage("Admin account exists, checking credentials...")
+
+          // Wait for rate limit to reset
+          await new Promise((resolve) => setTimeout(resolve, 8000))
+
+          // Try to sign in to get the user ID
+          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+            email: ADMIN_EMAIL,
+            password: ADMIN_PASSWORD,
+          })
+
+          if (signInError) {
+            if (signInError.message.includes("7 seconds")) {
+              setError("Please wait a moment and try again. Supabase has rate limiting on authentication requests.")
+              setLoading(false)
+              return
+            }
+            throw signInError
+          }
+          userId = signInData.user?.id
+        } else if (signUpError.message.includes("7 seconds")) {
+          setError("Please wait a moment and try again. Supabase has rate limiting on authentication requests.")
+          setLoading(false)
+          return
+        } else {
+          throw signUpError
+        }
+      }
+
+      if (!userId) {
+        throw new Error("Could not get user ID")
+      }
+
+      setMessage("Setting up admin privileges...")
+
+      // Wait a bit before making the next request
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+
+      // Call the setup function
+      const { error: setupError } = await supabase.rpc("create_default_admin", {
+        admin_email: ADMIN_EMAIL,
+        admin_user_id: userId,
+      })
+
+      if (setupError) {
+        // If the function doesn't exist, create the admin role directly
+        if (setupError.message.includes("function") || setupError.message.includes("does not exist")) {
+          setMessage("Creating admin role directly...")
+
+          // Create profile first
+          await supabase.from("profiles").upsert({
+            id: userId,
+            balance: 1000000.0,
+          })
+
+          // Create admin role with proper JSON syntax
+          const { error: adminRoleError } = await supabase.from("admin_roles").upsert({
+            user_id: userId,
+            role: "SUPER_ADMIN",
+            permissions: JSON.stringify(["all"]), // Proper JSON string
+            created_by: userId,
+          })
+
+          if (adminRoleError && !adminRoleError.message.includes("duplicate")) {
+            throw adminRoleError
+          }
+
+          // Log the admin creation with proper JSON syntax
+          await supabase.from("admin_activity_log").insert({
+            admin_id: userId,
+            action: "ADMIN_ACCOUNT_CREATED",
+            details: JSON.stringify({
+              // Proper JSON string
+              type: "default_admin",
+              email: ADMIN_EMAIL,
+            }),
+          })
+        } else {
+          throw setupError
+        }
+      }
+
+      setMessage(`Admin account setup complete! 
+
+A confirmation email has been sent to the admin email address. 
+Please check the email and confirm the account, then contact the system administrator for login credentials.`)
+      // Don't auto-fill credentials anymore
+    } catch (err: any) {
+      console.error("Admin setup error:", err)
+      if (err.message.includes("7 seconds")) {
+        setError("Rate limit exceeded. Please wait 10 seconds and try again.")
+      } else {
+        setError(`Failed to setup admin account: ${err.message}`)
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Alternative setup method that just provides instructions
+  const showAdminInstructions = () => {
+    setMessage(`To set up admin access manually:
+      
+1. Contact the system administrator for admin credentials
+2. Sign up with the provided admin email and password
+3. Check your email for confirmation and confirm your account
+4. Wait 10 seconds after signup
+5. Come back and login through the Admin tab
+6. The system will automatically grant admin privileges on first login
+      
+Or wait 10 seconds and try the "Setup Admin" button again.`)
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
@@ -223,7 +390,11 @@ export default function LoginPage() {
       // Fallback to simple validation for demo purposes
       if (email && password.length >= 6) {
         localStorage.setItem("user", JSON.stringify({ email, isAuthenticated: true }))
-        router.push("/dashboard")
+        if (isAdminMode) {
+          router.push("/admin")
+        } else {
+          router.push("/dashboard")
+        }
       } else {
         setError("Please enter a valid email and password (min 6 characters)")
       }
@@ -234,7 +405,7 @@ export default function LoginPage() {
     try {
       const { supabase } = await import("@/lib/supabase")
 
-      if (isLogin) {
+      if (isLogin || isAdminMode) {
         const { error, data } = await supabase.auth.signInWithPassword({
           email,
           password,
@@ -243,17 +414,80 @@ export default function LoginPage() {
         if (error) {
           setError(error.message)
         } else {
-          // Check if user is admin
-          const { data: adminRole } = await supabase
-            .from("admin_roles")
-            .select("role")
-            .eq("user_id", data.user?.id)
-            .single()
+          // Auto-grant admin role to default admin email on first login
+          if (data.user?.email === ADMIN_EMAIL) {
+            try {
+              // Check if admin role already exists
+              const { data: existingRole } = await supabase
+                .from("admin_roles")
+                .select("role")
+                .eq("user_id", data.user.id)
+                .single()
 
-          if (adminRole) {
-            router.push("/admin")
+              if (!existingRole) {
+                // Create admin role automatically with proper JSON syntax
+                await supabase.from("admin_roles").insert({
+                  user_id: data.user.id,
+                  role: "SUPER_ADMIN",
+                  permissions: JSON.stringify(["all"]), // Proper JSON string
+                  created_by: data.user.id,
+                })
+
+                // Create profile with admin balance
+                await supabase.from("profiles").upsert({
+                  id: data.user.id,
+                  balance: 1000000.0,
+                })
+
+                // Log the admin creation with proper JSON syntax
+                await supabase.from("admin_activity_log").insert({
+                  admin_id: data.user.id,
+                  action: "ADMIN_ACCOUNT_CREATED",
+                  details: JSON.stringify({
+                    // Proper JSON string
+                    type: "auto_grant",
+                    email: data.user.email,
+                  }),
+                })
+              }
+            } catch (autoGrantError) {
+              console.warn("Could not auto-grant admin role:", autoGrantError)
+            }
+          }
+
+          if (isAdminMode) {
+            // Check if user actually has admin role
+            const { data: adminRole, error: adminRoleError } = await supabase
+              .from("admin_roles")
+              .select("role")
+              .eq("user_id", data.user?.id)
+              .single()
+
+            if (adminRoleError) {
+              console.log("Admin role check error:", adminRoleError)
+            }
+
+            if (adminRole) {
+              console.log("Admin role found, redirecting to admin dashboard")
+              router.push("/admin")
+            } else {
+              setError("This account does not have admin privileges. Please contact the system administrator.")
+            }
           } else {
-            router.push("/dashboard")
+            // Check if user is admin and redirect accordingly
+            const { data: adminRole } = await supabase
+              .from("admin_roles")
+              .select("role")
+              .eq("user_id", data.user?.id)
+              .single()
+
+            if (adminRole) {
+              console.log("User is admin, redirecting to admin dashboard")
+              router.push("/admin")
+            } else {
+              console.log("Regular user, redirecting to dashboard")
+              router.push("/dashboard")
+            }
           }
         }
       } else {
@@ -320,22 +554,36 @@ export default function LoginPage() {
 
   // Reset password strength when switching between login/signup
   useEffect(() => {
-    if (isLogin) {
+    if (isLogin || isAdminMode) {
       setPasswordStrength({ score: 0, feedback: "", color: "text-gray-500" })
     } else if (password) {
       checkPasswordStrength(password)
     }
-  }, [isLogin, password])
+  }, [isLogin, isAdminMode, password])
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <Card className="w-full max-w-md">
         <CardHeader className="space-y-1">
-          <CardTitle className="text-2xl font-bold text-center">{isLogin ? "Sign In" : "Sign Up"}</CardTitle>
+          <CardTitle className="text-2xl font-bold text-center flex items-center justify-center gap-2">
+            {isAdminMode ? (
+              <>
+                <Shield className="h-6 w-6 text-blue-600" />
+                Admin Login
+              </>
+            ) : (
+              <>
+                <User className="h-6 w-6" />
+                {isLogin ? "Sign In" : "Sign Up"}
+              </>
+            )}
+          </CardTitle>
           <CardDescription className="text-center">
-            {isLogin
-              ? "Enter your credentials to access your portfolio"
-              : "Create an account to start building your portfolio"}
+            {isAdminMode
+              ? "Access the administrative dashboard"
+              : isLogin
+                ? "Enter your credentials to access your portfolio"
+                : "Create an account to start building your portfolio"}
           </CardDescription>
           {!supabaseConfigured && (
             <Alert>
@@ -348,13 +596,60 @@ export default function LoginPage() {
           )}
         </CardHeader>
         <CardContent>
+          {/* Login Mode Toggle */}
+          <div className="flex mb-4 bg-gray-100 p-1 rounded-lg">
+            <Button
+              type="button"
+              variant={!isAdminMode ? "default" : "ghost"}
+              size="sm"
+              onClick={() => setIsAdminMode(false)}
+              className="flex-1 flex items-center gap-2"
+            >
+              <User className="h-4 w-4" />
+              User
+            </Button>
+            <Button
+              type="button"
+              variant={isAdminMode ? "default" : "ghost"}
+              size="sm"
+              onClick={() => setIsAdminMode(true)}
+              className="flex-1 flex items-center gap-2"
+            >
+              <Shield className="h-4 w-4" />
+              Admin
+            </Button>
+          </div>
+
+          {/* Admin Setup Helper */}
+          {isAdminMode && supabaseConfigured && (
+            <Alert className="mb-4">
+              <Shield className="h-4 w-4" />
+              <AlertDescription>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span>Need to create the default admin account?</span>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" onClick={setupDefaultAdmin} disabled={loading}>
+                        {loading ? "Setting up..." : "Auto Setup"}
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={showAdminInstructions} disabled={loading}>
+                        Manual Setup
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="text-xs text-gray-600">Contact system administrator for admin credentials.</div>
+                </div>
+              </AlertDescription>
+            </Alert>
+          )}
+
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
               <Input
                 id="email"
                 type="email"
-                placeholder="john@example.com"
+                placeholder={isAdminMode ? ADMIN_EMAIL : "john@example.com"}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
@@ -367,6 +662,7 @@ export default function LoginPage() {
                 <Input
                   id="password"
                   type={showPassword ? "text" : "password"}
+                  placeholder={isAdminMode ? ADMIN_PASSWORD : ""}
                   value={password}
                   onChange={handlePasswordChange}
                   required
@@ -391,7 +687,7 @@ export default function LoginPage() {
               </div>
 
               {/* Password strength indicator for signup */}
-              {!isLogin && password && (
+              {!isLogin && !isAdminMode && password && (
                 <div className="text-sm">
                   <div className={`font-medium ${passwordStrength.color}`}>{passwordStrength.feedback}</div>
                   <div className="flex mt-1 space-x-1">
@@ -416,7 +712,7 @@ export default function LoginPage() {
               )}
 
               {/* Strong password suggestion for signup */}
-              {!isLogin && (
+              {!isLogin && !isAdminMode && (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <Button
@@ -477,28 +773,30 @@ export default function LoginPage() {
 
             {message && (
               <Alert>
-                <AlertDescription>{message}</AlertDescription>
+                <AlertDescription style={{ whiteSpace: "pre-line" }}>{message}</AlertDescription>
               </Alert>
             )}
 
             <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? "Loading..." : isLogin ? "Sign In" : "Sign Up"}
+              {loading ? "Loading..." : isAdminMode ? "Admin Login" : isLogin ? "Sign In" : "Sign Up"}
             </Button>
           </form>
 
           <div className="mt-4 space-y-2">
-            <div className="text-center">
-              <button
-                type="button"
-                onClick={() => setIsLogin(!isLogin)}
-                className="text-sm text-blue-600 hover:underline"
-                disabled={loading}
-              >
-                {isLogin ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
-              </button>
-            </div>
+            {!isAdminMode && (
+              <div className="text-center">
+                <button
+                  type="button"
+                  onClick={() => setIsLogin(!isLogin)}
+                  className="text-sm text-blue-600 hover:underline"
+                  disabled={loading}
+                >
+                  {isLogin ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
+                </button>
+              </div>
+            )}
 
-            {isLogin && supabaseConfigured && (
+            {(isLogin || isAdminMode) && supabaseConfigured && (
               <div className="text-center">
                 <Dialog open={isResetDialogOpen} onOpenChange={setIsResetDialogOpen}>
                   <DialogTrigger asChild>

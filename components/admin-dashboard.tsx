@@ -11,7 +11,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { Settings, Users, DollarSign, Clock, Activity, Trophy, Shield, RefreshCw } from "lucide-react"
+import { Settings, Users, DollarSign, Clock, Activity, Trophy, Shield, RefreshCw, UserPlus } from "lucide-react"
 
 interface AdminUser {
   id: string
@@ -20,9 +20,11 @@ interface AdminUser {
   total_value: number
   created_at: string
   last_sign_in_at: string
+  is_admin?: boolean
 }
 
 interface MarketSettings {
+  id?: string
   market_open_time: string
   market_close_time: string
   timezone: string
@@ -67,7 +69,9 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
   const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null)
   const [balanceAdjustment, setBalanceAdjustment] = useState<number>(0)
   const [isBalanceDialogOpen, setIsBalanceDialogOpen] = useState(false)
-  const [activeTab, setActiveTab] = useState("users")
+  const [isAdminDialogOpen, setIsAdminDialogOpen] = useState(false)
+  const [newAdminEmail, setNewAdminEmail] = useState("")
+  const [activeTab, setActiveTab] = useState("overview")
 
   useEffect(() => {
     loadAdminData()
@@ -98,6 +102,11 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
 
       if (profilesError) throw profilesError
 
+      // Get admin roles
+      const { data: adminRoles, error: adminError } = await supabase.from("admin_roles").select("user_id, role")
+
+      if (adminError) console.warn("Cannot fetch admin roles:", adminError)
+
       // Get user emails from auth.users (requires service role key)
       const { data: authUsers, error: authError } = await supabase.auth.admin.listUsers()
 
@@ -118,6 +127,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
           const authUser = authUsers?.users.find((u) => u.id === profile.id)
           const userPortfolios = portfolios?.filter((p) => p.user_id === profile.id) || []
           const totalPortfolioValue = userPortfolios.reduce((sum, p) => sum + (p.total_value || 0), 0)
+          const isAdmin = adminRoles?.some((ar) => ar.user_id === profile.id)
 
           return {
             id: profile.id,
@@ -126,6 +136,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
             total_value: profile.balance + totalPortfolioValue,
             created_at: profile.created_at,
             last_sign_in_at: authUser?.last_sign_in_at || null,
+            is_admin: isAdmin,
           }
         }) || []
 
@@ -246,6 +257,33 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
     }
   }
 
+  const updateGameSettings = async (settingKey: string, settingValue: any) => {
+    try {
+      const { supabase } = await import("@/lib/supabase")
+      const { error } = await supabase.from("game_settings").upsert({
+        setting_key: settingKey,
+        setting_value: settingValue,
+        updated_at: new Date().toISOString(),
+        updated_by: user.id,
+      })
+
+      if (error) throw error
+
+      // Log admin activity
+      await supabase.from("admin_activity_log").insert({
+        admin_id: user.id,
+        action: "UPDATE_GAME_SETTINGS",
+        details: { setting_key: settingKey, setting_value: settingValue },
+      })
+
+      await loadGameSettings()
+      setError("")
+    } catch (err) {
+      setError("Failed to update game settings")
+      console.error("Game settings update error:", err)
+    }
+  }
+
   const adjustUserBalance = async () => {
     if (!selectedUser || balanceAdjustment === 0) return
 
@@ -307,6 +345,89 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
     }
   }
 
+  const makeUserAdmin = async (userId: string, userEmail: string) => {
+    try {
+      const { supabase } = await import("@/lib/supabase")
+
+      // Add admin role
+      const { error } = await supabase.from("admin_roles").insert({
+        user_id: userId,
+        role: "ADMIN",
+        permissions: '["user_management", "market_control"]',
+        created_by: user.id,
+      })
+
+      if (error) throw error
+
+      // Log admin activity
+      await supabase.from("admin_activity_log").insert({
+        admin_id: user.id,
+        action: "GRANT_ADMIN_ROLE",
+        target_user_id: userId,
+        details: { user_email: userEmail, role: "ADMIN" },
+      })
+
+      await loadUsers()
+      setError("")
+    } catch (err) {
+      setError("Failed to grant admin role")
+      console.error("Admin role grant error:", err)
+    }
+  }
+
+  const removeUserAdmin = async (userId: string, userEmail: string) => {
+    try {
+      const { supabase } = await import("@/lib/supabase")
+
+      // Remove admin role
+      const { error } = await supabase.from("admin_roles").delete().eq("user_id", userId)
+
+      if (error) throw error
+
+      // Log admin activity
+      await supabase.from("admin_activity_log").insert({
+        admin_id: user.id,
+        action: "REVOKE_ADMIN_ROLE",
+        target_user_id: userId,
+        details: { user_email: userEmail },
+      })
+
+      await loadUsers()
+      setError("")
+    } catch (err) {
+      setError("Failed to revoke admin role")
+      console.error("Admin role revoke error:", err)
+    }
+  }
+
+  const createAdminByEmail = async () => {
+    if (!newAdminEmail) return
+
+    try {
+      const { supabase } = await import("@/lib/supabase")
+
+      // Find user by email
+      const targetUser = users.find((u) => u.email.toLowerCase() === newAdminEmail.toLowerCase())
+
+      if (!targetUser) {
+        setError("User not found with that email address")
+        return
+      }
+
+      if (targetUser.is_admin) {
+        setError("User is already an admin")
+        return
+      }
+
+      await makeUserAdmin(targetUser.id, targetUser.email)
+      setIsAdminDialogOpen(false)
+      setNewAdminEmail("")
+    } catch (err) {
+      setError("Failed to create admin")
+      console.error("Admin creation error:", err)
+    }
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -332,6 +453,15 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                 <Shield className="h-3 w-3" />
                 Admin: {user.email}
               </Badge>
+              <Button
+                variant="outline"
+                onClick={loadAdminData}
+                disabled={loading}
+                className="flex items-center gap-2 bg-transparent"
+              >
+                <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+                Refresh Data
+              </Button>
               <Button variant="outline" onClick={onLogout}>
                 Logout
               </Button>
@@ -350,6 +480,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
         {/* Navigation Tabs */}
         <div className="flex space-x-1 mb-6 bg-gray-100 p-1 rounded-lg w-fit">
           {[
+            { id: "overview", label: "Overview", icon: DollarSign },
             { id: "users", label: "Users", icon: Users },
             { id: "market", label: "Market", icon: Clock },
             { id: "settings", label: "Game Settings", icon: Settings },
@@ -369,21 +500,171 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
           ))}
         </div>
 
+        {/* Overview Dashboard */}
+        {activeTab === "overview" && (
+          <div className="space-y-6">
+            {/* Stats Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Total Users</CardTitle>
+                  <Users className="h-4 w-4 text-muted-foreground" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">{users.length}</div>
+                  <p className="text-xs text-muted-foreground">{users.filter((u) => u.is_admin).length} admins</p>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Total Portfolio Value</CardTitle>
+                  <DollarSign className="h-4 w-4 text-muted-foreground" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">
+                    ${users.reduce((sum, user) => sum + user.total_value, 0).toLocaleString()}
+                  </div>
+                  <p className="text-xs text-muted-foreground">Across all users</p>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Market Status</CardTitle>
+                  <Clock className="h-4 w-4 text-muted-foreground" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">
+                    {marketSettings?.is_market_open_override === true
+                      ? "🟢 Open"
+                      : marketSettings?.is_market_open_override === false
+                        ? "🔴 Closed"
+                        : "🟡 Auto"}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {marketSettings?.is_market_open_override !== null ? "Manual Override" : "Automatic"}
+                  </p>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Recent Activity</CardTitle>
+                  <CardDescription>Admin actions logged</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">{adminActivity.length}</div>
+                  <p className="text-xs text-muted-foreground">Admin actions logged</p>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Quick Actions */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Quick Actions</CardTitle>
+                <CardDescription>Common administrative tasks</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <Button
+                    onClick={() => updateMarketSettings({ is_market_open_override: true })}
+                    className="flex flex-col items-center gap-2 h-20"
+                  >
+                    <Clock className="h-6 w-6" />
+                    Force Market Open
+                  </Button>
+                  <Button
+                    onClick={() => updateMarketSettings({ is_market_open_override: false })}
+                    variant="destructive"
+                    className="flex flex-col items-center gap-2 h-20"
+                  >
+                    <Clock className="h-6 w-6" />
+                    Force Market Closed
+                  </Button>
+                  <Button
+                    onClick={() => updateMarketSettings({ is_market_open_override: null })}
+                    variant="outline"
+                    className="flex flex-col items-center gap-2 h-20"
+                  >
+                    <RefreshCw className="h-6 w-6" />
+                    Auto Market Mode
+                  </Button>
+                  <Button
+                    onClick={() => setActiveTab("users")}
+                    variant="outline"
+                    className="flex flex-col items-center gap-2 h-20"
+                  >
+                    <Users className="h-6 w-6" />
+                    Manage Users
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Recent Users */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Recent Users</CardTitle>
+                <CardDescription>Latest user registrations</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Email</TableHead>
+                      <TableHead>Total Value</TableHead>
+                      <TableHead>Joined</TableHead>
+                      <TableHead>Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {users.slice(0, 5).map((user) => (
+                      <TableRow key={user.id}>
+                        <TableCell>{user.email}</TableCell>
+                        <TableCell>${user.total_value.toLocaleString()}</TableCell>
+                        <TableCell>{new Date(user.created_at).toLocaleDateString()}</TableCell>
+                        <TableCell>
+                          {user.is_admin ? (
+                            <Badge variant="secondary">Admin</Badge>
+                          ) : (
+                            <Badge variant="outline">User</Badge>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
         {/* Users Management */}
         {activeTab === "users" && (
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Users className="h-5 w-5" />
-                User Management
-              </CardTitle>
-              <CardDescription>Manage user accounts and balances</CardDescription>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <Users className="h-5 w-5" />
+                    User Management
+                  </CardTitle>
+                  <CardDescription>Manage user accounts, balances, and admin roles</CardDescription>
+                </div>
+                <Button onClick={() => setIsAdminDialogOpen(true)} className="flex items-center gap-2">
+                  <UserPlus className="h-4 w-4" />
+                  Make Admin
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Email</TableHead>
+                    <TableHead>Role</TableHead>
                     <TableHead>Balance</TableHead>
                     <TableHead>Total Value</TableHead>
                     <TableHead>Joined</TableHead>
@@ -395,6 +676,16 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                   {users.map((user) => (
                     <TableRow key={user.id}>
                       <TableCell>{user.email}</TableCell>
+                      <TableCell>
+                        {user.is_admin ? (
+                          <Badge variant="secondary" className="flex items-center gap-1 w-fit">
+                            <Shield className="h-3 w-3" />
+                            Admin
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline">User</Badge>
+                        )}
+                      </TableCell>
                       <TableCell>${user.balance.toLocaleString()}</TableCell>
                       <TableCell>${user.total_value.toLocaleString()}</TableCell>
                       <TableCell>{new Date(user.created_at).toLocaleDateString()}</TableCell>
@@ -418,6 +709,20 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                             <RefreshCw className="h-3 w-3 mr-1" />
                             Reset Portfolio
                           </Button>
+                          {user.is_admin ? (
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              onClick={() => removeUserAdmin(user.id, user.email)}
+                            >
+                              Remove Admin
+                            </Button>
+                          ) : (
+                            <Button size="sm" variant="secondary" onClick={() => makeUserAdmin(user.id, user.email)}>
+                              <Shield className="h-3 w-3 mr-1" />
+                              Make Admin
+                            </Button>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>
@@ -517,9 +822,8 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                   <Input
                     type="number"
                     value={gameSettings.starting_balance || 100000}
-                    onChange={(e) => {
-                      // Update game settings logic would go here
-                    }}
+                    onChange={(e) => updateGameSettings("starting_balance", Number(e.target.value))}
+                    onBlur={(e) => updateGameSettings("starting_balance", Number(e.target.value))}
                   />
                 </div>
                 <div>
@@ -527,24 +831,71 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                   <Input
                     type="number"
                     value={gameSettings.daily_trading_limit || 10}
-                    onChange={(e) => {
-                      // Update game settings logic would go here
-                    }}
+                    onChange={(e) => updateGameSettings("daily_trading_limit", Number(e.target.value))}
+                    onBlur={(e) => updateGameSettings("daily_trading_limit", Number(e.target.value))}
+                  />
+                </div>
+                <div>
+                  <Label>Trading Fee (%)</Label>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={gameSettings.trading_fee || 0}
+                    onChange={(e) => updateGameSettings("trading_fee", Number(e.target.value))}
+                    onBlur={(e) => updateGameSettings("trading_fee", Number(e.target.value))}
+                  />
+                </div>
+                <div>
+                  <Label>Max Position Size (%)</Label>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    max="1"
+                    value={gameSettings.max_position_size || 0.2}
+                    onChange={(e) => updateGameSettings("max_position_size", Number(e.target.value))}
+                    onBlur={(e) => updateGameSettings("max_position_size", Number(e.target.value))}
                   />
                 </div>
               </div>
               <div className="space-y-2">
                 <div className="flex items-center space-x-2">
-                  <Switch checked={gameSettings.allow_short_selling === "true"} />
+                  <Switch
+                    checked={gameSettings.allow_short_selling === true || gameSettings.allow_short_selling === "true"}
+                    onCheckedChange={(checked) => updateGameSettings("allow_short_selling", checked)}
+                  />
                   <Label>Allow Short Selling</Label>
                 </div>
                 <div className="flex items-center space-x-2">
-                  <Switch checked={gameSettings.allow_margin_trading === "true"} />
+                  <Switch
+                    checked={gameSettings.allow_margin_trading === true || gameSettings.allow_margin_trading === "true"}
+                    onCheckedChange={(checked) => updateGameSettings("allow_margin_trading", checked)}
+                  />
                   <Label>Allow Margin Trading</Label>
                 </div>
                 <div className="flex items-center space-x-2">
-                  <Switch checked={gameSettings.leaderboard_enabled === "true"} />
+                  <Switch
+                    checked={gameSettings.leaderboard_enabled === true || gameSettings.leaderboard_enabled === "true"}
+                    onCheckedChange={(checked) => updateGameSettings("leaderboard_enabled", checked)}
+                  />
                   <Label>Enable Leaderboard</Label>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label>Game Start Date</Label>
+                  <Input
+                    type="date"
+                    value={gameSettings.game_start_date ? JSON.parse(gameSettings.game_start_date) : "2024-01-01"}
+                    onChange={(e) => updateGameSettings("game_start_date", JSON.stringify(e.target.value))}
+                  />
+                </div>
+                <div>
+                  <Label>Game End Date</Label>
+                  <Input
+                    type="date"
+                    value={gameSettings.game_end_date ? JSON.parse(gameSettings.game_end_date) : "2024-12-31"}
+                    onChange={(e) => updateGameSettings("game_end_date", JSON.stringify(e.target.value))}
+                  />
                 </div>
               </div>
             </CardContent>
@@ -669,6 +1020,36 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                   Apply Adjustment
                 </Button>
                 <Button variant="outline" onClick={() => setIsBalanceDialogOpen(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Create Admin Dialog */}
+        <Dialog open={isAdminDialogOpen} onOpenChange={setIsAdminDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Grant Admin Role</DialogTitle>
+              <DialogDescription>Enter the email address of the user to make an admin</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div>
+                <Label htmlFor="adminEmail">User Email</Label>
+                <Input
+                  id="adminEmail"
+                  type="email"
+                  value={newAdminEmail}
+                  onChange={(e) => setNewAdminEmail(e.target.value)}
+                  placeholder="user@example.com"
+                />
+              </div>
+              <div className="flex space-x-2">
+                <Button onClick={createAdminByEmail} disabled={!newAdminEmail}>
+                  Grant Admin Role
+                </Button>
+                <Button variant="outline" onClick={() => setIsAdminDialogOpen(false)}>
                   Cancel
                 </Button>
               </div>
