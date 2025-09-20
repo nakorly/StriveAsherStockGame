@@ -9,67 +9,120 @@ import type { User } from "@supabase/supabase-js"
 export default function AdminPage() {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
-  const [isAdmin, setIsAdmin] = useState(false)
+  const [error, setError] = useState("")
   const router = useRouter()
 
   useEffect(() => {
     const checkAdminAccess = async () => {
       try {
-        const { getSupabase, isSupabaseConfigured } = await import("@/lib/supabase")
+        // Check if Supabase is configured
+        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ""
+        const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
+        const isConfigured = !!(supabaseUrl && supabaseAnonKey && supabaseUrl.startsWith("https://"))
 
-        if (!isSupabaseConfigured()) {
-          console.log("Supabase not configured, redirecting to home")
-          router.push("/")
+        if (!isConfigured) {
+          console.log("Supabase not configured, redirecting to dashboard")
+          router.push("/dashboard")
           return
         }
 
-        const supabase = await getSupabase()
+        // Try to initialize Supabase with timeout
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Supabase initialization timeout")), 5000),
+        )
 
-        // Verify supabase client is valid
+        const initPromise = (async () => {
+          const { getSupabase } = await import("@/lib/supabase")
+          return await getSupabase()
+        })()
+
+        const supabase = await Promise.race([initPromise, timeoutPromise])
+
         if (!supabase || !supabase.auth || typeof supabase.auth.getSession !== "function") {
-          console.error("Invalid Supabase client")
-          router.push("/")
-          return
+          throw new Error("Failed to initialize Supabase client")
         }
 
+        // Get current session
         const {
           data: { session },
-          error,
+          error: sessionError,
         } = await supabase.auth.getSession()
 
-        if (error || !session) {
-          console.log("No valid session, redirecting to home")
-          router.push("/")
-          return
+        if (sessionError) {
+          console.error("Session error:", sessionError)
+          throw sessionError
         }
 
-        // Verify supabase.from is available before using it
-        if (!supabase.from || typeof supabase.from !== "function") {
-          console.error("Supabase database methods not available")
+        if (!session) {
+          console.log("No session found, redirecting to login")
           router.push("/")
           return
         }
 
         // Check if user has admin role
-        const { data: adminRole, error: adminError } = await supabase
+        if (!supabase.from || typeof supabase.from !== "function") {
+          throw new Error("Database methods not available")
+        }
+
+        const { data: adminRole, error: roleError } = await supabase
           .from("admin_roles")
           .select("role")
           .eq("user_id", session.user.id)
           .single()
 
-        if (adminError || !adminRole) {
-          // Not an admin, redirect to regular dashboard
+        if (roleError) {
+          if (roleError.message.includes("No rows found")) {
+            console.log("User is not an admin, redirecting to dashboard")
+            router.push("/dashboard")
+            return
+          }
+          console.error("Error checking admin role:", roleError)
+          throw roleError
+        }
+
+        if (!adminRole) {
           console.log("User is not an admin, redirecting to dashboard")
           router.push("/dashboard")
           return
         }
 
+        console.log("Admin access confirmed for user:", session.user.email)
         setUser(session.user)
-        setIsAdmin(true)
+
+        // Listen for auth changes
+        const {
+          data: { subscription },
+        } = supabase.auth.onAuthStateChange(async (event, session) => {
+          if (event === "SIGNED_OUT" || !session) {
+            router.push("/")
+          } else if (session) {
+            // Re-check admin status
+            const { data: adminRole } = await supabase
+              .from("admin_roles")
+              .select("role")
+              .eq("user_id", session.user.id)
+              .single()
+
+            if (!adminRole) {
+              router.push("/dashboard")
+              return
+            }
+
+            setUser(session.user)
+          }
+        })
+
+        setLoading(false)
+        return () => subscription.unsubscribe()
       } catch (err) {
         console.error("Admin access check error:", err)
-        router.push("/")
-      } finally {
+        setError("Failed to verify admin access. Please try again later.")
+
+        // Fallback - redirect to dashboard after a delay
+        setTimeout(() => {
+          router.push("/dashboard")
+        }, 3000)
+
         setLoading(false)
       }
     }
@@ -77,39 +130,31 @@ export default function AdminPage() {
     checkAdminAccess()
   }, [router])
 
-  const handleLogout = async () => {
-    try {
-      const { getSupabase, isSupabaseConfigured } = await import("@/lib/supabase")
-
-      if (!isSupabaseConfigured()) {
-        router.push("/")
-        return
-      }
-
-      const supabase = await getSupabase()
-
-      if (supabase && supabase.auth && typeof supabase.auth.signOut === "function") {
-        await supabase.auth.signOut()
-      }
-
-      router.push("/")
-    } catch (err) {
-      console.error("Logout error:", err)
-      router.push("/")
-    }
-  }
-
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin" />
+        <div className="text-center">
+          <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
+          <p className="text-gray-600">Verifying admin access...</p>
+        </div>
       </div>
     )
   }
 
-  if (!user || !isAdmin) {
+  if (error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="text-red-600 mb-4">⚠️ {error}</div>
+          <p className="text-gray-600">Redirecting to dashboard...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (!user) {
     return null
   }
 
-  return <AdminDashboard user={user} onLogout={handleLogout} />
+  return <AdminDashboard user={user} />
 }
