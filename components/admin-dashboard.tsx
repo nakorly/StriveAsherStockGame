@@ -91,7 +91,8 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
 
   const loadUsers = async () => {
     try {
-      const { supabase } = await import("@/lib/supabase")
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = getSupabase()
 
       // Get all users with their profiles and portfolio values
       const { data: profiles, error: profilesError } = await supabase.from("profiles").select(`
@@ -148,7 +149,8 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
 
   const loadMarketSettings = async () => {
     try {
-      const { supabase } = await import("@/lib/supabase")
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = getSupabase()
       const { data, error } = await supabase.from("market_settings").select("*").single()
 
       if (error) throw error
@@ -160,7 +162,8 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
 
   const loadGameSettings = async () => {
     try {
-      const { supabase } = await import("@/lib/supabase")
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = getSupabase()
       const { data, error } = await supabase.from("game_settings").select("*")
 
       if (error) throw error
@@ -177,7 +180,8 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
 
   const loadAdminActivity = async () => {
     try {
-      const { supabase } = await import("@/lib/supabase")
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = getSupabase()
       const { data, error } = await supabase
         .from("admin_activity_log")
         .select("*")
@@ -202,7 +206,8 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
 
   const loadLeaderboard = async () => {
     try {
-      const { supabase } = await import("@/lib/supabase")
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = getSupabase()
 
       // Update leaderboard first
       await supabase.rpc("update_leaderboard")
@@ -230,7 +235,8 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
 
   const updateMarketSettings = async (newSettings: Partial<MarketSettings>) => {
     try {
-      const { supabase } = await import("@/lib/supabase")
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = getSupabase()
       const { error } = await supabase
         .from("market_settings")
         .update({
@@ -269,7 +275,8 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
 
   const updateGameSettings = async (settingKey: string, settingValue: any) => {
     try {
-      const { supabase } = await import("@/lib/supabase")
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = getSupabase()
       const { error } = await supabase.from("game_settings").upsert({
         setting_key: settingKey,
         setting_value: settingValue,
@@ -298,7 +305,8 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
     if (!selectedUser || balanceAdjustment === 0) return
 
     try {
-      const { supabase } = await import("@/lib/supabase")
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = getSupabase()
       const newBalance = selectedUser.balance + balanceAdjustment
 
       const { error } = await supabase.from("profiles").update({ balance: newBalance }).eq("id", selectedUser.id)
@@ -330,7 +338,8 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
 
   const resetUserPortfolio = async (userId: string) => {
     try {
-      const { supabase } = await import("@/lib/supabase")
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = getSupabase()
 
       // Delete all portfolio positions
       await supabase.from("portfolios").delete().eq("user_id", userId)
@@ -357,7 +366,8 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
 
   const makeUserAdmin = async (userId: string, userEmail: string) => {
     try {
-      const { supabase } = await import("@/lib/supabase")
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = getSupabase()
 
       // Add admin role
       const { error } = await supabase.from("admin_roles").insert({
@@ -387,7 +397,8 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
 
   const removeUserAdmin = async (userId: string, userEmail: string) => {
     try {
-      const { supabase } = await import("@/lib/supabase")
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = getSupabase()
 
       // Remove admin role
       const { error } = await supabase.from("admin_roles").delete().eq("user_id", userId)
@@ -414,7 +425,8 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
     if (!newAdminEmail) return
 
     try {
-      const { supabase } = await import("@/lib/supabase")
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = getSupabase()
 
       // Find user by email
       const targetUser = users.find((u) => u.email.toLowerCase() === newAdminEmail.toLowerCase())

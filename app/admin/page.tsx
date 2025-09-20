@@ -15,7 +15,22 @@ export default function AdminPage() {
   useEffect(() => {
     const checkAdminAccess = async () => {
       try {
-        const { supabase } = await import("@/lib/supabase")
+        const { getSupabase, isSupabaseConfigured } = await import("@/lib/supabase")
+
+        if (!isSupabaseConfigured()) {
+          console.log("Supabase not configured, redirecting to home")
+          router.push("/")
+          return
+        }
+
+        const supabase = await getSupabase()
+
+        // Verify supabase client is valid
+        if (!supabase || !supabase.auth || typeof supabase.auth.getSession !== "function") {
+          console.error("Invalid Supabase client")
+          router.push("/")
+          return
+        }
 
         const {
           data: { session },
@@ -23,6 +38,14 @@ export default function AdminPage() {
         } = await supabase.auth.getSession()
 
         if (error || !session) {
+          console.log("No valid session, redirecting to home")
+          router.push("/")
+          return
+        }
+
+        // Verify supabase.from is available before using it
+        if (!supabase.from || typeof supabase.from !== "function") {
+          console.error("Supabase database methods not available")
           router.push("/")
           return
         }
@@ -36,6 +59,7 @@ export default function AdminPage() {
 
         if (adminError || !adminRole) {
           // Not an admin, redirect to regular dashboard
+          console.log("User is not an admin, redirecting to dashboard")
           router.push("/dashboard")
           return
         }
@@ -55,11 +79,23 @@ export default function AdminPage() {
 
   const handleLogout = async () => {
     try {
-      const { supabase } = await import("@/lib/supabase")
-      await supabase.auth.signOut()
+      const { getSupabase, isSupabaseConfigured } = await import("@/lib/supabase")
+
+      if (!isSupabaseConfigured()) {
+        router.push("/")
+        return
+      }
+
+      const supabase = await getSupabase()
+
+      if (supabase && supabase.auth && typeof supabase.auth.signOut === "function") {
+        await supabase.auth.signOut()
+      }
+
       router.push("/")
     } catch (err) {
       console.error("Logout error:", err)
+      router.push("/")
     }
   }
 

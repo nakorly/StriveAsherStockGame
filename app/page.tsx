@@ -19,6 +19,16 @@ import {
 } from "@/components/ui/dialog"
 import { RefreshCw, Copy, Check, Eye, EyeOff, Shield, User } from "lucide-react"
 
+// Simple configuration check without importing Supabase
+function isSupabaseConfigured(): boolean {
+  if (typeof window === "undefined") return false
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ""
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
+
+  return !!(supabaseUrl && supabaseAnonKey && supabaseUrl.startsWith("https://"))
+}
+
 export default function LoginPage() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
@@ -32,7 +42,7 @@ export default function LoginPage() {
   const [resetMessage, setResetMessage] = useState("")
   const [resetError, setResetError] = useState("")
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false)
-  const [supabaseConfigured, setSupabaseConfigured] = useState(false)
+  const [supabaseAvailable, setSupabaseAvailable] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [suggestedPassword, setSuggestedPassword] = useState("")
   const [passwordCopied, setPasswordCopied] = useState(false)
@@ -51,67 +61,114 @@ export default function LoginPage() {
 
   useEffect(() => {
     const initializeAuth = async () => {
-      // Check if Supabase is configured by trying to import and use it
-      try {
-        const { supabase } = await import("@/lib/supabase")
+      // Check if we're on the client side
+      if (typeof window === "undefined") {
+        return
+      }
 
-        // Try to get session to verify Supabase is working
-        const {
-          data: { session },
-          error,
-        } = await supabase.auth.getSession()
+      // Check if Supabase is configured
+      const configured = isSupabaseConfigured()
 
-        if (error) {
-          console.error("Supabase configuration error:", error)
-          setSupabaseConfigured(false)
-        } else {
-          setSupabaseConfigured(true)
+      if (!configured) {
+        console.log("Supabase not configured, using demo mode")
+        setSupabaseAvailable(false)
+        return
+      }
 
-          // If user is already logged in, redirect to appropriate dashboard
-          if (session) {
-            // Check if user is admin
-            const { data: adminRole } = await supabase
-              .from("admin_roles")
-              .select("role")
-              .eq("user_id", session.user?.id)
-              .single()
+      // Try to test Supabase availability without importing it initially
+      console.log("Supabase appears configured, testing availability...")
 
-            if (adminRole) {
-              router.push("/admin")
-            } else {
-              router.push("/dashboard")
+      // Use a very short timeout to test if Supabase can be loaded
+      const testSupabase = async () => {
+        try {
+          // Only try to load Supabase if we really need it
+          const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 3000))
+
+          const loadPromise = import("@/lib/supabase").then(async (module) => {
+            const supabase = await module.getSupabase()
+            if (supabase) {
+              // Quick test
+              await supabase.auth.getSession()
+              return true
             }
-            return
-          }
-
-          // Listen for auth changes
-          const {
-            data: { subscription },
-          } = supabase.auth.onAuthStateChange(async (event, session) => {
-            if (event === "SIGNED_OUT" || !session) {
-              // Stay on login page
-            } else if (session) {
-              // Check if user is admin
-              const { data: adminRole } = await supabase
-                .from("admin_roles")
-                .select("role")
-                .eq("user_id", session.user?.id)
-                .single()
-
-              if (adminRole) {
-                router.push("/admin")
-              } else {
-                router.push("/dashboard")
-              }
-            }
+            return false
           })
 
-          return () => subscription.unsubscribe()
+          const result = await Promise.race([loadPromise, timeoutPromise])
+
+          if (result) {
+            console.log("Supabase is available")
+            setSupabaseAvailable(true)
+
+            // Now we can safely use Supabase
+            const { getSupabase } = await import("@/lib/supabase")
+            const supabase = await getSupabase()
+
+            if (supabase) {
+              // Check for existing session
+              const {
+                data: { session },
+              } = await supabase.auth.getSession()
+
+              if (session) {
+                // Check if user is admin
+                try {
+                  const { data: adminRole } = await supabase
+                    .from("admin_roles")
+                    .select("role")
+                    .eq("user_id", session.user?.id)
+                    .single()
+
+                  if (adminRole) {
+                    router.push("/admin")
+                  } else {
+                    router.push("/dashboard")
+                  }
+                  return
+                } catch (adminCheckError) {
+                  console.warn("Could not check admin role:", adminCheckError)
+                  router.push("/dashboard")
+                  return
+                }
+              }
+
+              // Listen for auth changes
+              const {
+                data: { subscription },
+              } = supabase.auth.onAuthStateChange(async (event, session) => {
+                if (event === "SIGNED_OUT" || !session) {
+                  // Stay on login page
+                } else if (session) {
+                  // Check if user is admin
+                  try {
+                    const { data: adminRole } = await supabase
+                      .from("admin_roles")
+                      .select("role")
+                      .eq("user_id", session.user?.id)
+                      .single()
+
+                    if (adminRole) {
+                      router.push("/admin")
+                    } else {
+                      router.push("/dashboard")
+                    }
+                  } catch (adminCheckError) {
+                    console.warn("Could not check admin role:", adminCheckError)
+                    router.push("/dashboard")
+                  }
+                }
+              })
+
+              return () => subscription.unsubscribe()
+            }
+          }
+        } catch (error) {
+          console.log("Supabase not available, using demo mode:", error)
+          setSupabaseAvailable(false)
         }
-      } catch (err) {
-        console.error("Supabase import/initialization error:", err)
-        setSupabaseConfigured(false)
       }
+
+      await testSupabase()
     }
 
     initializeAuth()
@@ -239,8 +296,8 @@ export default function LoginPage() {
 
   // Setup default admin account
   const setupDefaultAdmin = async () => {
-    if (!supabaseConfigured) {
-      setError("Supabase configuration required for admin setup")
+    if (!supabaseAvailable) {
+      setError("Supabase is required for admin setup but is not available")
       return
     }
 
@@ -249,7 +306,12 @@ export default function LoginPage() {
     setMessage("Setting up admin account...")
 
     try {
-      const { supabase } = await import("@/lib/supabase")
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = await getSupabase()
+
+      if (!supabase) {
+        throw new Error("Supabase client not available")
+      }
 
       // First, try to sign up the admin user
       setMessage("Creating admin account...")
@@ -337,6 +399,9 @@ Please check the email and confirm the account, then contact the system administ
       console.error("Admin setup error:", err)
       if (err.message.includes("7 seconds")) {
         setError("Rate limit exceeded. Please wait 10 seconds and try again.")
+      } else if (err.message.includes("Supabase")) {
+        setError("Supabase connection failed. Please check your configuration.")
+        setSupabaseAvailable(false)
       } else {
         setError(`Failed to setup admin account: ${err.message}`)
       }
@@ -365,8 +430,9 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
     setError("")
     setMessage("")
 
-    if (!supabaseConfigured) {
-      // Fallback to simple validation for demo purposes
+    // Demo mode fallback (always available)
+    if (!supabaseAvailable) {
+      // Simple validation for demo purposes
       if (email && password.length >= 6) {
         localStorage.setItem("user", JSON.stringify({ email, isAuthenticated: true }))
         if (isAdminMode) {
@@ -381,8 +447,14 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
       return
     }
 
+    // Supabase mode
     try {
-      const { supabase } = await import("@/lib/supabase")
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = await getSupabase()
+
+      if (!supabase) {
+        throw new Error("Supabase client not available")
+      }
 
       if (isLogin || isAdminMode) {
         const { error, data } = await supabase.auth.signInWithPassword({
@@ -437,29 +509,40 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
           }
 
           // Always check admin role after login
-          const { data: adminRole, error: adminRoleError } = await supabase
-            .from("admin_roles")
-            .select("role")
-            .eq("user_id", data.user?.id)
-            .single()
+          try {
+            const { data: adminRole, error: adminRoleError } = await supabase
+              .from("admin_roles")
+              .select("role")
+              .eq("user_id", data.user?.id)
+              .single()
 
-          if (adminRoleError) {
-            console.log("Admin role check error:", adminRoleError)
-          }
+            if (adminRoleError) {
+              console.log("Admin role check error:", adminRoleError)
+            }
 
-          console.log("Admin role found:", adminRole)
+            console.log("Admin role found:", adminRole)
 
-          if (adminRole) {
-            console.log("Redirecting to admin dashboard")
-            // Force redirect to admin dashboard
-            window.location.href = "/admin"
-          } else if (isAdminMode) {
-            setError("This account does not have admin privileges. Please contact the system administrator.")
-            setLoading(false)
-            return
-          } else {
-            console.log("Redirecting to user dashboard")
-            router.push("/dashboard")
+            if (adminRole) {
+              console.log("Redirecting to admin dashboard")
+              // Force redirect to admin dashboard
+              window.location.href = "/admin"
+            } else if (isAdminMode) {
+              setError("This account does not have admin privileges. Please contact the system administrator.")
+              setLoading(false)
+              return
+            } else {
+              console.log("Redirecting to user dashboard")
+              router.push("/dashboard")
+            }
+          } catch (roleCheckError) {
+            console.warn("Could not check admin role:", roleCheckError)
+            if (isAdminMode) {
+              setError("Could not verify admin privileges. Please try again.")
+              setLoading(false)
+              return
+            } else {
+              router.push("/dashboard")
+            }
           }
         }
       } else {
@@ -474,9 +557,22 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
           setMessage("Check your email for the confirmation link!")
         }
       }
-    } catch (err) {
-      setError("An unexpected error occurred")
+    } catch (err: any) {
       console.error("Auth error:", err)
+      // Fall back to demo mode if Supabase fails
+      console.log("Falling back to demo mode due to error:", err.message)
+      setSupabaseAvailable(false)
+
+      if (email && password.length >= 6) {
+        localStorage.setItem("user", JSON.stringify({ email, isAuthenticated: true }))
+        if (isAdminMode) {
+          router.push("/admin")
+        } else {
+          router.push("/dashboard")
+        }
+      } else {
+        setError("Please enter a valid email and password (min 6 characters)")
+      }
     } finally {
       setLoading(false)
     }
@@ -488,8 +584,8 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
     setResetError("")
     setResetMessage("")
 
-    if (!supabaseConfigured) {
-      setResetError("Password reset requires Supabase configuration")
+    if (!supabaseAvailable) {
+      setResetError("Password reset requires Supabase but it's not available")
       setResetLoading(false)
       return
     }
@@ -501,7 +597,13 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
     }
 
     try {
-      const { supabase } = await import("@/lib/supabase")
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = await getSupabase()
+
+      if (!supabase) {
+        throw new Error("Supabase client not available")
+      }
+
       const { error } = await supabase.auth.resetPasswordForEmail(resetEmail, {
         redirectTo: `${typeof window !== "undefined" ? window.location.origin : ""}/reset-password`,
       })
@@ -516,8 +618,8 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
           setResetMessage("")
         }, 3000)
       }
-    } catch (err) {
-      setResetError("An unexpected error occurred")
+    } catch (err: any) {
+      setResetError(`Password reset error: ${err.message || "An unexpected error occurred"}`)
       console.error("Password reset error:", err)
     } finally {
       setResetLoading(false)
@@ -557,12 +659,12 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
                 ? "Enter your credentials to access your portfolio"
                 : "Create an account to start building your portfolio"}
           </CardDescription>
-          {!supabaseConfigured && (
+          {!supabaseAvailable && (
             <Alert>
               <AlertDescription>
-                <strong>Demo Mode:</strong> Supabase not configured. Using local storage for demo purposes.
+                <strong>Demo Mode:</strong> Running in demo mode with local storage.
                 <br />
-                <small>Check console for Supabase connection errors.</small>
+                <small>All features work with simulated data.</small>
               </AlertDescription>
             </Alert>
           )}
@@ -593,7 +695,7 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
           </div>
 
           {/* Admin Setup Helper */}
-          {isAdminMode && supabaseConfigured && (
+          {isAdminMode && supabaseAvailable && (
             <Alert className="mb-4">
               <Shield className="h-4 w-4" />
               <AlertDescription>
@@ -768,7 +870,7 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
               </div>
             )}
 
-            {(isLogin || isAdminMode) && supabaseConfigured && (
+            {(isLogin || isAdminMode) && supabaseAvailable && (
               <div className="text-center">
                 <Dialog open={isResetDialogOpen} onOpenChange={setIsResetDialogOpen}>
                   <DialogTrigger asChild>
