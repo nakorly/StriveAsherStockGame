@@ -156,5 +156,25 @@ export default function AdminPage() {
     return null
   }
 
-  return <AdminDashboard user={user} />
+  const handleLogout = async () => {
+    try {
+      const { getSupabase, isSupabaseConfigured } = await import("@/lib/supabase")
+
+      if (!isSupabaseConfigured()) {
+        router.push("/")
+        return
+      }
+
+      const supabase = await getSupabase()
+      if (supabase && supabase.auth && typeof supabase.auth.signOut === "function") {
+        await supabase.auth.signOut()
+      }
+      router.push("/")
+    } catch (err) {
+      console.error("Logout error:", err)
+      router.push("/")
+    }
+  }
+
+  return <AdminDashboard user={user} onLogout={handleLogout} />
 }

@@ -546,6 +546,26 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
           }
         }
       } else {
+        // Check if registration is allowed before proceeding
+        try {
+          const { data: gameSettings } = await supabase
+            .from("game_settings")
+            .select("setting_value")
+            .eq("setting_key", "allow_new_registrations")
+            .single()
+
+          const registrationAllowed = gameSettings?.setting_value === true || gameSettings?.setting_value === "true"
+          
+          if (!registrationAllowed) {
+            setError("New user registrations are currently disabled. Please contact the administrator.")
+            setLoading(false)
+            return
+          }
+        } catch (settingsError) {
+          console.warn("Could not check registration settings:", settingsError)
+          // Allow registration if we can't check the setting
+        }
+
         const { error } = await supabase.auth.signUp({
           email,
           password,

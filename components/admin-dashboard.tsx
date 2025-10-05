@@ -11,7 +11,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { Settings, Users, DollarSign, Clock, Activity, Trophy, Shield, RefreshCw, UserPlus } from "lucide-react"
+import { Settings, Users, DollarSign, Clock, Activity, Trophy, Shield, RefreshCw, UserPlus, TrendingUp, Edit, Trash2, Plus } from "lucide-react"
 
 interface AdminUser {
   id: string
@@ -47,10 +47,23 @@ interface AdminActivity {
 
 interface LeaderboardEntry {
   rank: number
-  user_email: string
+  user_id: string
+  username: string
+  display_name: string
   total_value: number
   total_gain_loss: number
   total_gain_loss_percent: number
+}
+
+interface ArtificialStock {
+  id: string
+  symbol: string
+  name: string
+  artificial_price: number
+  original_price: number | null
+  is_active: boolean
+  created_at: string
+  updated_at: string
 }
 
 interface AdminDashboardProps {
@@ -72,6 +85,11 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
   const [isAdminDialogOpen, setIsAdminDialogOpen] = useState(false)
   const [newAdminEmail, setNewAdminEmail] = useState("")
   const [activeTab, setActiveTab] = useState("overview")
+  const [artificialStocks, setArtificialStocks] = useState<ArtificialStock[]>([])
+  const [isStockPriceDialogOpen, setIsStockPriceDialogOpen] = useState(false)
+  const [newStockSymbol, setNewStockSymbol] = useState("")
+  const [newStockName, setNewStockName] = useState("")
+  const [newStockPrice, setNewStockPrice] = useState("")
 
   useEffect(() => {
     loadAdminData()
@@ -80,7 +98,14 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
   const loadAdminData = async () => {
     setLoading(true)
     try {
-      await Promise.all([loadUsers(), loadMarketSettings(), loadGameSettings(), loadAdminActivity(), loadLeaderboard()])
+      await Promise.all([
+        loadUsers(),
+        loadMarketSettings(),
+        loadGameSettings(),
+        loadAdminActivity(),
+        loadLeaderboard(),
+        loadArtificialStocks()
+      ])
     } catch (err) {
       setError("Failed to load admin data")
       console.error("Admin data loading error:", err)
@@ -92,12 +117,14 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
   const loadUsers = async () => {
     try {
       const { getSupabase } = await import("@/lib/supabase")
-      const supabase = getSupabase()
+      const supabase = await getSupabase()
 
       // Get all users with their profiles and portfolio values
       const { data: profiles, error: profilesError } = await supabase.from("profiles").select(`
           id,
           balance,
+          username,
+          display_name,
           created_at
         `)
 
@@ -124,11 +151,11 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
 
       // Combine data
       const usersData =
-        profiles?.map((profile) => {
-          const authUser = authUsers?.users.find((u) => u.id === profile.id)
-          const userPortfolios = portfolios?.filter((p) => p.user_id === profile.id) || []
-          const totalPortfolioValue = userPortfolios.reduce((sum, p) => sum + (p.total_value || 0), 0)
-          const isAdmin = adminRoles?.some((ar) => ar.user_id === profile.id)
+        profiles?.map((profile: any) => {
+          const authUser = authUsers?.users.find((u: any) => u.id === profile.id)
+          const userPortfolios = portfolios?.filter((p: any) => p.user_id === profile.id) || []
+          const totalPortfolioValue = userPortfolios.reduce((sum: number, p: any) => sum + (p.total_value || 0), 0)
+          const isAdmin = adminRoles?.some((ar: any) => ar.user_id === profile.id)
 
           return {
             id: profile.id,
@@ -147,10 +174,26 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
     }
   }
 
+  const loadArtificialStocks = async () => {
+    try {
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = await getSupabase()
+      const { data, error } = await supabase
+        .from("artificial_stock_prices")
+        .select("*")
+        .order("created_at", { ascending: false })
+
+      if (error) throw error
+      setArtificialStocks(data || [])
+    } catch (err) {
+      console.error("Error loading artificial stocks:", err)
+    }
+  }
+
   const loadMarketSettings = async () => {
     try {
       const { getSupabase } = await import("@/lib/supabase")
-      const supabase = getSupabase()
+      const supabase = await getSupabase()
       const { data, error } = await supabase.from("market_settings").select("*").single()
 
       if (error) throw error
@@ -163,13 +206,13 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
   const loadGameSettings = async () => {
     try {
       const { getSupabase } = await import("@/lib/supabase")
-      const supabase = getSupabase()
+      const supabase = await getSupabase()
       const { data, error } = await supabase.from("game_settings").select("*")
 
       if (error) throw error
 
       const settings: GameSettings = {}
-      data?.forEach((setting) => {
+      data?.forEach((setting: any) => {
         settings[setting.setting_key] = setting.setting_value
       })
       setGameSettings(settings)
@@ -181,7 +224,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
   const loadAdminActivity = async () => {
     try {
       const { getSupabase } = await import("@/lib/supabase")
-      const supabase = getSupabase()
+      const supabase = await getSupabase()
       const { data, error } = await supabase
         .from("admin_activity_log")
         .select("*")
@@ -192,7 +235,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
 
       // Note: In a real implementation, you'd join with auth.users to get emails
       const activities =
-        data?.map((activity) => ({
+        data?.map((activity: any) => ({
           ...activity,
           admin_email: "Admin", // Would need service role to get actual email
           target_user_email: activity.target_user_id ? "User" : undefined,
@@ -207,10 +250,10 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
   const loadLeaderboard = async () => {
     try {
       const { getSupabase } = await import("@/lib/supabase")
-      const supabase = getSupabase()
+      const supabase = await getSupabase()
 
       // Update leaderboard first
-      await supabase.rpc("update_leaderboard")
+      await supabase.rpc("update_leaderboard_with_usernames")
 
       const { data, error } = await supabase
         .from("leaderboard")
@@ -220,14 +263,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
 
       if (error) throw error
 
-      // Note: Would need to join with auth.users to get emails
-      const leaderboardData =
-        data?.map((entry) => ({
-          ...entry,
-          user_email: "User", // Would need service role to get actual email
-        })) || []
-
-      setLeaderboard(leaderboardData)
+      setLeaderboard(data || [])
     } catch (err) {
       console.error("Error loading leaderboard:", err)
     }
@@ -236,7 +272,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
   const updateMarketSettings = async (newSettings: Partial<MarketSettings>) => {
     try {
       const { getSupabase } = await import("@/lib/supabase")
-      const supabase = getSupabase()
+      const supabase = await getSupabase()
       const { error } = await supabase
         .from("market_settings")
         .update({
@@ -273,10 +309,118 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
     }
   }
 
+  const addArtificialStock = async () => {
+    if (!newStockSymbol || !newStockName || !newStockPrice) return
+
+    try {
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = await getSupabase()
+      const { error } = await supabase.from("artificial_stock_prices").insert({
+        symbol: newStockSymbol.toUpperCase(),
+        name: newStockName,
+        artificial_price: parseFloat(newStockPrice),
+        is_active: true,
+        created_by: user.id,
+        updated_by: user.id,
+      })
+
+      if (error) throw error
+
+      // Log admin activity
+      await supabase.from("admin_activity_log").insert({
+        admin_id: user.id,
+        action: "ADD_ARTIFICIAL_STOCK",
+        details: {
+          symbol: newStockSymbol.toUpperCase(),
+          name: newStockName,
+          price: parseFloat(newStockPrice),
+        },
+      })
+
+      await loadArtificialStocks()
+      setIsStockPriceDialogOpen(false)
+      setNewStockSymbol("")
+      setNewStockName("")
+      setNewStockPrice("")
+      setError("")
+    } catch (err) {
+      setError("Failed to add artificial stock")
+      console.error("Add artificial stock error:", err)
+    }
+  }
+
+  const updateArtificialStock = async (id: string, newPrice: number) => {
+    try {
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = await getSupabase()
+      const { error } = await supabase
+        .from("artificial_stock_prices")
+        .update({
+          artificial_price: newPrice,
+          updated_at: new Date().toISOString(),
+          updated_by: user.id,
+        })
+        .eq("id", id)
+
+      if (error) throw error
+
+      // Log admin activity
+      const stock = artificialStocks.find(s => s.id === id)
+      await supabase.from("admin_activity_log").insert({
+        admin_id: user.id,
+        action: "UPDATE_ARTIFICIAL_STOCK_PRICE",
+        details: {
+          symbol: stock?.symbol,
+          old_price: stock?.artificial_price,
+          new_price: newPrice,
+        },
+      })
+
+      await loadArtificialStocks()
+      setError("")
+    } catch (err) {
+      setError("Failed to update artificial stock price")
+      console.error("Update artificial stock error:", err)
+    }
+  }
+
+  const toggleArtificialStock = async (id: string, isActive: boolean) => {
+    try {
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = await getSupabase()
+      const { error } = await supabase
+        .from("artificial_stock_prices")
+        .update({
+          is_active: isActive,
+          updated_at: new Date().toISOString(),
+          updated_by: user.id,
+        })
+        .eq("id", id)
+
+      if (error) throw error
+
+      // Log admin activity
+      const stock = artificialStocks.find(s => s.id === id)
+      await supabase.from("admin_activity_log").insert({
+        admin_id: user.id,
+        action: isActive ? "ACTIVATE_ARTIFICIAL_STOCK" : "DEACTIVATE_ARTIFICIAL_STOCK",
+        details: {
+          symbol: stock?.symbol,
+        },
+      })
+
+      await loadArtificialStocks()
+      setError("")
+    } catch (err) {
+      setError("Failed to toggle artificial stock")
+      console.error("Toggle artificial stock error:", err)
+    }
+  }
+
   const updateGameSettings = async (settingKey: string, settingValue: any) => {
     try {
       const { getSupabase } = await import("@/lib/supabase")
-      const supabase = getSupabase()
+      const supabase = await getSupabase()
       const { error } = await supabase.from("game_settings").upsert({
         setting_key: settingKey,
         setting_value: settingValue,
@@ -306,7 +450,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
 
     try {
       const { getSupabase } = await import("@/lib/supabase")
-      const supabase = getSupabase()
+      const supabase = await getSupabase()
       const newBalance = selectedUser.balance + balanceAdjustment
 
       const { error } = await supabase.from("profiles").update({ balance: newBalance }).eq("id", selectedUser.id)
@@ -339,7 +483,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
   const resetUserPortfolio = async (userId: string) => {
     try {
       const { getSupabase } = await import("@/lib/supabase")
-      const supabase = getSupabase()
+      const supabase = await getSupabase()
 
       // Delete all portfolio positions
       await supabase.from("portfolios").delete().eq("user_id", userId)
@@ -367,7 +511,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
   const makeUserAdmin = async (userId: string, userEmail: string) => {
     try {
       const { getSupabase } = await import("@/lib/supabase")
-      const supabase = getSupabase()
+      const supabase = await getSupabase()
 
       // Add admin role
       const { error } = await supabase.from("admin_roles").insert({
@@ -398,7 +542,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
   const removeUserAdmin = async (userId: string, userEmail: string) => {
     try {
       const { getSupabase } = await import("@/lib/supabase")
-      const supabase = getSupabase()
+      const supabase = await getSupabase()
 
       // Remove admin role
       const { error } = await supabase.from("admin_roles").delete().eq("user_id", userId)
@@ -504,7 +648,8 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
           {[
             { id: "overview", label: "Overview", icon: DollarSign },
             { id: "users", label: "Users", icon: Users },
-            { id: "market", label: "Market", icon: Clock },
+            { id: "market", label: "Market Control", icon: Clock },
+            { id: "stocks", label: "Stock Prices", icon: TrendingUp },
             { id: "settings", label: "Game Settings", icon: Settings },
             { id: "leaderboard", label: "Leaderboard", icon: Trophy },
             { id: "activity", label: "Activity Log", icon: Activity },
@@ -827,6 +972,92 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
           </div>
         )}
 
+        {/* Artificial Stock Prices Management */}
+        {activeTab === "stocks" && (
+          <div className="space-y-6">
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <TrendingUp className="h-5 w-5" />
+                      Artificial Stock Prices
+                    </CardTitle>
+                    <CardDescription>Override real stock prices with artificial ones for simulation</CardDescription>
+                  </div>
+                  <Button onClick={() => setIsStockPriceDialogOpen(true)} className="flex items-center gap-2">
+                    <Plus className="h-4 w-4" />
+                    Add Stock Price
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Symbol</TableHead>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Artificial Price</TableHead>
+                      <TableHead>Original Price</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Last Updated</TableHead>
+                      <TableHead>Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {artificialStocks.map((stock) => (
+                      <TableRow key={stock.id}>
+                        <TableCell className="font-medium">{stock.symbol}</TableCell>
+                        <TableCell>{stock.name}</TableCell>
+                        <TableCell>${stock.artificial_price.toFixed(2)}</TableCell>
+                        <TableCell>
+                          {stock.original_price ? `$${stock.original_price.toFixed(2)}` : "N/A"}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={stock.is_active ? "default" : "secondary"}>
+                            {stock.is_active ? "Active" : "Inactive"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>{new Date(stock.updated_at).toLocaleDateString()}</TableCell>
+                        <TableCell>
+                          <div className="flex space-x-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                const newPrice = prompt(`Enter new price for ${stock.symbol}:`, stock.artificial_price.toString())
+                                if (newPrice && !isNaN(parseFloat(newPrice))) {
+                                  updateArtificialStock(stock.id, parseFloat(newPrice))
+                                }
+                              }}
+                            >
+                              <Edit className="h-3 w-3 mr-1" />
+                              Edit Price
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant={stock.is_active ? "destructive" : "default"}
+                              onClick={() => toggleArtificialStock(stock.id, !stock.is_active)}
+                            >
+                              {stock.is_active ? "Deactivate" : "Activate"}
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                {artificialStocks.length === 0 && (
+                  <div className="text-center py-8">
+                    <p className="text-gray-500">No artificial stock prices configured yet.</p>
+                    <p className="text-sm text-gray-400">Add some to override real market prices for simulation.</p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
         {/* Game Settings */}
         {activeTab === "settings" && (
           <Card>
@@ -880,6 +1111,13 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                 </div>
               </div>
               <div className="space-y-2">
+                <div className="flex items-center space-x-2">
+                  <Switch
+                    checked={gameSettings.allow_new_registrations === true || gameSettings.allow_new_registrations === "true"}
+                    onCheckedChange={(checked) => updateGameSettings("allow_new_registrations", checked)}
+                  />
+                  <Label>Allow New User Registrations</Label>
+                </div>
                 <div className="flex items-center space-x-2">
                   <Switch
                     checked={gameSettings.allow_short_selling === true || gameSettings.allow_short_selling === "true"}
@@ -951,7 +1189,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                       <TableCell>
                         <Badge variant={entry.rank <= 3 ? "default" : "secondary"}>#{entry.rank}</Badge>
                       </TableCell>
-                      <TableCell>{entry.user_email}</TableCell>
+                      <TableCell>{entry.display_name || entry.username || `User ${entry.user_id.slice(-4)}`}</TableCell>
                       <TableCell>${entry.total_value.toLocaleString()}</TableCell>
                       <TableCell className={entry.total_gain_loss >= 0 ? "text-green-600" : "text-red-600"}>
                         {entry.total_gain_loss >= 0 ? "+" : ""}${entry.total_gain_loss.toLocaleString()}
@@ -1072,6 +1310,57 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                   Grant Admin Role
                 </Button>
                 <Button variant="outline" onClick={() => setIsAdminDialogOpen(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Add Stock Price Dialog */}
+        <Dialog open={isStockPriceDialogOpen} onOpenChange={setIsStockPriceDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Add Artificial Stock Price</DialogTitle>
+              <DialogDescription>Add a custom stock price to override real market data</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div>
+                <Label htmlFor="stockSymbol">Stock Symbol</Label>
+                <Input
+                  id="stockSymbol"
+                  type="text"
+                  value={newStockSymbol}
+                  onChange={(e) => setNewStockSymbol(e.target.value.toUpperCase())}
+                  placeholder="AAPL"
+                />
+              </div>
+              <div>
+                <Label htmlFor="stockName">Company Name</Label>
+                <Input
+                  id="stockName"
+                  type="text"
+                  value={newStockName}
+                  onChange={(e) => setNewStockName(e.target.value)}
+                  placeholder="Apple Inc."
+                />
+              </div>
+              <div>
+                <Label htmlFor="stockPrice">Artificial Price ($)</Label>
+                <Input
+                  id="stockPrice"
+                  type="number"
+                  step="0.01"
+                  value={newStockPrice}
+                  onChange={(e) => setNewStockPrice(e.target.value)}
+                  placeholder="150.00"
+                />
+              </div>
+              <div className="flex space-x-2">
+                <Button onClick={addArtificialStock} disabled={!newStockSymbol || !newStockName || !newStockPrice}>
+                  Add Stock Price
+                </Button>
+                <Button variant="outline" onClick={() => setIsStockPriceDialogOpen(false)}>
                   Cancel
                 </Button>
               </div>

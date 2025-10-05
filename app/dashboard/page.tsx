@@ -10,9 +10,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
-import { Loader2, Search, TrendingUp, TrendingDown, DollarSign, Activity, BarChart3, Plus, Minus } from "lucide-react"
+import { Loader2, Search, TrendingUp, TrendingDown, DollarSign, Activity, BarChart3, Plus, Minus, User as UserIcon, Edit } from "lucide-react"
 import { SellStockDialog } from "@/components/sell-stock-dialog"
 import { QueuedOrders } from "@/components/queued-orders"
+import { PublicLeaderboard } from "@/components/public-leaderboard"
 import type { User } from "@supabase/supabase-js"
 
 interface Stock {
@@ -56,6 +57,7 @@ interface QueuedOrder {
 
 export default function Dashboard() {
   const [user, setUser] = useState<User | null>(null)
+  const [userProfile, setUserProfile] = useState<any>(null)
   const [balance, setBalance] = useState(10000)
   const [portfolio, setPortfolio] = useState<Portfolio[]>([])
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([])
@@ -71,6 +73,9 @@ export default function Dashboard() {
   const [buyShares, setBuyShares] = useState("")
   const [sellDialogOpen, setSellDialogOpen] = useState(false)
   const [selectedPortfolioItem, setSelectedPortfolioItem] = useState<Portfolio | null>(null)
+  const [isProfileDialogOpen, setIsProfileDialogOpen] = useState(false)
+  const [username, setUsername] = useState("")
+  const [displayName, setDisplayName] = useState("")
   const router = useRouter()
 
   useEffect(() => {
@@ -111,6 +116,7 @@ export default function Dashboard() {
         if (supabase.from && typeof supabase.from === "function") {
           await Promise.all([
             loadUserData(supabase, session.user.id),
+            loadUserProfile(supabase, session.user.id),
             loadPortfolio(supabase, session.user.id),
             loadLeaderboard(supabase),
             loadQueuedOrders(supabase, session.user.id),
@@ -182,6 +188,72 @@ export default function Dashboard() {
       }
     } catch (err) {
       console.error("Error in loadUserData:", err)
+    }
+  }
+
+  const loadUserProfile = async (supabase: any, userId: string) => {
+    try {
+      if (!supabase || !supabase.from || typeof supabase.from !== "function") {
+        return
+      }
+
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("username, display_name, created_at")
+        .eq("id", userId)
+        .single()
+
+      if (error) {
+        console.error("Error loading user profile:", error)
+        return
+      }
+
+      if (data) {
+        setUserProfile(data)
+        setUsername(data.username || "")
+        setDisplayName(data.display_name || "")
+      }
+    } catch (err) {
+      console.error("Error in loadUserProfile:", err)
+    }
+  }
+
+  const updateUserProfile = async () => {
+    if (!user) return
+
+    try {
+      const { getSupabase, isSupabaseConfigured } = await import("@/lib/supabase")
+
+      if (!isSupabaseConfigured()) {
+        // Demo mode - just update local state
+        setUserProfile({ username, display_name: displayName })
+        setIsProfileDialogOpen(false)
+        return
+      }
+
+      const supabase = await getSupabase()
+      if (!supabase || !supabase.from || typeof supabase.from !== "function") {
+        return
+      }
+
+      const { error } = await supabase
+        .from("profiles")
+        .update({
+          username: username || null,
+          display_name: displayName || null,
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", user.id)
+
+      if (error) {
+        console.error("Error updating profile:", error)
+        return
+      }
+
+      await loadUserProfile(supabase, user.id)
+      setIsProfileDialogOpen(false)
+    } catch (err) {
+      console.error("Error updating profile:", err)
     }
   }
 
@@ -558,6 +630,7 @@ export default function Dashboard() {
             <TabsTrigger value="search">Search Stocks</TabsTrigger>
             <TabsTrigger value="orders">Queued Orders</TabsTrigger>
             <TabsTrigger value="leaderboard">Leaderboard</TabsTrigger>
+            <TabsTrigger value="profile">Profile</TabsTrigger>
           </TabsList>
 
           <TabsContent value="portfolio">
@@ -712,38 +785,49 @@ export default function Dashboard() {
           </TabsContent>
 
           <TabsContent value="leaderboard">
+            <PublicLeaderboard />
+          </TabsContent>
+
+          <TabsContent value="profile">
             <Card>
               <CardHeader>
-                <CardTitle>Leaderboard</CardTitle>
-                <CardDescription>See how you rank against other investors</CardDescription>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <UserIcon className="h-5 w-5" />
+                      Profile Settings
+                    </CardTitle>
+                    <CardDescription>Manage your trading profile and display preferences</CardDescription>
+                  </div>
+                  <Button onClick={() => setIsProfileDialogOpen(true)} className="flex items-center gap-2">
+                    <Edit className="h-4 w-4" />
+                    Edit Profile
+                  </Button>
+                </div>
               </CardHeader>
-              <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Rank</TableHead>
-                      <TableHead>User</TableHead>
-                      <TableHead>Total Value</TableHead>
-                      <TableHead>Gain/Loss</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {leaderboard.map((entry) => (
-                      <TableRow key={entry.user_id}>
-                        <TableCell className="font-medium">#{entry.rank}</TableCell>
-                        <TableCell>{entry.user_id === user?.id ? "You" : `User ${entry.user_id.slice(-4)}`}</TableCell>
-                        <TableCell>${entry.total_value.toLocaleString()}</TableCell>
-                        <TableCell>
-                          <div className={entry.total_gain_loss >= 0 ? "text-green-600" : "text-red-600"}>
-                            ${entry.total_gain_loss.toLocaleString()}
-                            <br />
-                            <span className="text-xs">({entry.total_gain_loss_percent.toFixed(2)}%)</span>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+              <CardContent className="space-y-4">
+                <div>
+                  <Label>Email</Label>
+                  <div className="text-sm text-gray-600 p-2 bg-gray-50 rounded">{user?.email || "Not available"}</div>
+                </div>
+                <div>
+                  <Label>Username</Label>
+                  <div className="text-sm text-gray-600 p-2 bg-gray-50 rounded">
+                    {userProfile?.username || "Not set"}
+                  </div>
+                </div>
+                <div>
+                  <Label>Display Name</Label>
+                  <div className="text-sm text-gray-600 p-2 bg-gray-50 rounded">
+                    {userProfile?.display_name || "Not set"}
+                  </div>
+                </div>
+                <div>
+                  <Label>Member Since</Label>
+                  <div className="text-sm text-gray-600 p-2 bg-gray-50 rounded">
+                    {userProfile?.created_at ? new Date(userProfile.created_at).toLocaleDateString() : "Unknown"}
+                  </div>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
@@ -815,6 +899,56 @@ export default function Dashboard() {
             }}
           />
         )}
+
+        {/* Profile Edit Dialog */}
+        <Dialog open={isProfileDialogOpen} onOpenChange={setIsProfileDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Edit Profile</DialogTitle>
+              <DialogDescription>
+                Update your username and display name for the leaderboard
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div>
+                <Label htmlFor="username">Username</Label>
+                <Input
+                  id="username"
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="Enter your username"
+                  maxLength={50}
+                />
+                <div className="text-xs text-gray-500 mt-1">
+                  Used for leaderboard rankings. Must be unique.
+                </div>
+              </div>
+              <div>
+                <Label htmlFor="displayName">Display Name</Label>
+                <Input
+                  id="displayName"
+                  type="text"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  placeholder="Enter your display name"
+                  maxLength={100}
+                />
+                <div className="text-xs text-gray-500 mt-1">
+                  Shown publicly on the leaderboard.
+                </div>
+              </div>
+              <div className="flex space-x-2">
+                <Button onClick={updateUserProfile}>
+                  Save Changes
+                </Button>
+                <Button variant="outline" onClick={() => setIsProfileDialogOpen(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   )
