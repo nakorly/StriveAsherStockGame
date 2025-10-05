@@ -119,6 +119,10 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
       const { getSupabase } = await import("@/lib/supabase")
       const supabase = await getSupabase()
 
+      if (!supabase) {
+        throw new Error("Supabase client not available")
+      }
+
       // Get all users with their profiles and portfolio values
       const { data: profiles, error: profilesError } = await supabase.from("profiles").select(`
           id,
@@ -194,10 +198,34 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
     try {
       const { getSupabase } = await import("@/lib/supabase")
       const supabase = await getSupabase()
+
+      if (!supabase) {
+        console.log("Supabase not available, using defaults")
+        setMarketSettings({
+          market_open_time: "09:30:00",
+          market_close_time: "16:00:00",
+          timezone: "America/New_York",
+          trading_days: [1,2,3,4,5],
+          is_market_open_override: null
+        })
+        return
+      }
+
       const { data, error } = await supabase.from("market_settings").select("*").single()
 
-      if (error) throw error
-      setMarketSettings(data)
+      if (error) {
+        console.warn("Error loading market settings:", error)
+        // Use defaults if no market settings found
+        setMarketSettings({
+          market_open_time: "09:30:00",
+          market_close_time: "16:00:00",
+          timezone: "America/New_York",
+          trading_days: [1,2,3,4,5],
+          is_market_open_override: null
+        })
+      } else {
+        setMarketSettings(data)
+      }
     } catch (err) {
       console.error("Error loading market settings:", err)
     }

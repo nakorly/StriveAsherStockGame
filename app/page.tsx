@@ -147,8 +147,10 @@ export default function LoginPage() {
                       .eq("user_id", session.user?.id)
                       .single()
 
+                    console.log("Session admin check:", { adminRole })
+
                     if (adminRole) {
-                      router.push("/admin")
+                      window.location.href = "/admin"
                     } else {
                       router.push("/dashboard")
                     }
@@ -516,22 +518,20 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
               .eq("user_id", data.user?.id)
               .single()
 
-            if (adminRoleError) {
-              console.log("Admin role check error:", adminRoleError)
-            }
-
-            console.log("Admin role found:", adminRole)
+            console.log("Admin role check result:", { adminRole, adminRoleError })
 
             if (adminRole) {
-              console.log("Redirecting to admin dashboard")
-              // Force redirect to admin dashboard
-              window.location.href = "/admin"
+              console.log("Admin role found, redirecting to admin dashboard")
+              // Force redirect to admin dashboard with a slight delay
+              setTimeout(() => {
+                window.location.href = "/admin"
+              }, 100)
             } else if (isAdminMode) {
               setError("This account does not have admin privileges. Please contact the system administrator.")
               setLoading(false)
               return
             } else {
-              console.log("Redirecting to user dashboard")
+              console.log("No admin role, redirecting to user dashboard")
               router.push("/dashboard")
             }
           } catch (roleCheckError) {
