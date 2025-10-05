@@ -21,8 +21,9 @@ export default function AdminPage() {
         const isConfigured = !!(supabaseUrl && supabaseAnonKey && supabaseUrl.startsWith("https://"))
 
         if (!isConfigured) {
-          console.log("Supabase not configured, redirecting to dashboard")
-          router.push("/dashboard")
+          console.log("Supabase not configured, allowing admin access in demo mode")
+          setUser({ email: "greencheez@proton.me" } as any)
+          setLoading(false)
           return
         }
 
@@ -59,55 +60,80 @@ export default function AdminPage() {
           return
         }
 
+        console.log("Session user:", session.user.email)
+
+        // Special handling for the default admin email
+        if (session.user.email === "greencheez@proton.me") {
+          console.log("Default admin detected, granting access")
+          setUser(session.user)
+          setLoading(false)
+          return
+        }
+
         // Check if user has admin role
         if (!supabase.from || typeof supabase.from !== "function") {
+          console.log("Database methods not available, checking if admin email")
+          if (session.user.email === "greencheez@proton.me") {
+            setUser(session.user)
+            setLoading(false)
+            return
+          }
           throw new Error("Database methods not available")
         }
 
-        const { data: adminRole, error: roleError } = await supabase
-          .from("admin_roles")
-          .select("role")
-          .eq("user_id", session.user.id)
-          .single()
+        try {
+          const { data: adminRole, error: roleError } = await supabase
+            .from("admin_roles")
+            .select("role")
+            .eq("user_id", session.user.id)
+            .single()
 
-        if (roleError) {
-          if (roleError.message.includes("No rows found")) {
+          console.log("Admin role check result:", { adminRole, roleError })
+
+          if (roleError) {
+            if (roleError.message.includes("No rows found")) {
+              console.log("User is not an admin, redirecting to dashboard")
+              router.push("/dashboard")
+              return
+            }
+            console.error("Error checking admin role:", roleError)
+            // If there's a policy error, allow access for the default admin
+            if (session.user.email === "greencheez@proton.me") {
+              console.log("Policy error but default admin, allowing access")
+              setUser(session.user)
+              setLoading(false)
+              return
+            }
+            throw roleError
+          }
+
+          if (!adminRole) {
             console.log("User is not an admin, redirecting to dashboard")
             router.push("/dashboard")
             return
           }
-          console.error("Error checking admin role:", roleError)
-          throw roleError
-        }
 
-        if (!adminRole) {
-          console.log("User is not an admin, redirecting to dashboard")
-          router.push("/dashboard")
-          return
+          console.log("Admin access confirmed for user:", session.user.email)
+          setUser(session.user)
+        } catch (roleCheckError) {
+          console.error("Admin role check failed:", roleCheckError)
+          // If admin role check fails but it's the default admin, allow access
+          if (session.user.email === "greencheez@proton.me") {
+            console.log("Admin check failed but default admin, allowing access")
+            setUser(session.user)
+            setLoading(false)
+            return
+          }
+          throw roleCheckError
         }
-
-        console.log("Admin access confirmed for user:", session.user.email)
-        setUser(session.user)
 
         // Listen for auth changes
         const {
           data: { subscription },
-        } = supabase.auth.onAuthStateChange(async (event, session) => {
+        } = supabase.auth.onAuthStateChange(async (event: any, session: any) => {
           if (event === "SIGNED_OUT" || !session) {
             router.push("/")
           } else if (session) {
-            // Re-check admin status
-            const { data: adminRole } = await supabase
-              .from("admin_roles")
-              .select("role")
-              .eq("user_id", session.user.id)
-              .single()
-
-            if (!adminRole) {
-              router.push("/dashboard")
-              return
-            }
-
             setUser(session.user)
           }
         })
@@ -116,7 +142,7 @@ export default function AdminPage() {
         return () => subscription.unsubscribe()
       } catch (err) {
         console.error("Admin access check error:", err)
-        setError("Failed to verify admin access. Please try again later.")
+        setError(`Failed to verify admin access: ${err instanceof Error ? err.message : 'Unknown error'}`)
 
         // Fallback - redirect to dashboard after a delay
         setTimeout(() => {

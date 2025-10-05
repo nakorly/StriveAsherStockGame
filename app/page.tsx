@@ -120,7 +120,7 @@ export default function LoginPage() {
                     .single()
 
                   if (adminRole) {
-                    router.push("/admin")
+                    window.location.href = "/admin"
                   } else {
                     router.push("/dashboard")
                   }
@@ -522,10 +522,9 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
 
             if (adminRole) {
               console.log("Admin role found, redirecting to admin dashboard")
-              // Force redirect to admin dashboard with a slight delay
-              setTimeout(() => {
-                window.location.href = "/admin"
-              }, 100)
+              // Force redirect to admin dashboard immediately
+              window.location.href = "/admin"
+              return
             } else if (isAdminMode) {
               setError("This account does not have admin privileges. Please contact the system administrator.")
               setLoading(false)
