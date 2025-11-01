@@ -46,6 +46,7 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [suggestedPassword, setSuggestedPassword] = useState("")
   const [passwordCopied, setPasswordCopied] = useState(false)
+  const [signupCooldown, setSignupCooldown] = useState(0)
   const router = useRouter()
 
   // Admin credentials (hidden from UI)
@@ -111,7 +112,12 @@ export default function LoginPage() {
               } = await supabase.auth.getSession()
 
               if (session) {
-                // Check if user is admin
+                // If default admin email, go straight to admin
+                if (session.user?.email === ADMIN_EMAIL) {
+                  window.location.href = "/admin"
+                  return
+                }
+                // Check if user is admin via roles table
                 try {
                   const { data: adminRole } = await supabase
                     .from("admin_roles")
@@ -127,7 +133,12 @@ export default function LoginPage() {
                   return
                 } catch (adminCheckError) {
                   console.warn("Could not check admin role:", adminCheckError)
-                  router.push("/dashboard")
+                  // If we cannot verify, prefer admin for default admin email
+                  if (session.user?.email === ADMIN_EMAIL) {
+                    window.location.href = "/admin"
+                  } else {
+                    router.push("/dashboard")
+                  }
                   return
                 }
               }
@@ -139,6 +150,11 @@ export default function LoginPage() {
                 if (event === "SIGNED_OUT" || !session) {
                   // Stay on login page
                 } else if (session) {
+                  // If default admin email, go straight to admin
+                  if (session.user?.email === ADMIN_EMAIL) {
+                    window.location.href = "/admin"
+                    return
+                  }
                   // Check if user is admin
                   try {
                     const { data: adminRole } = await supabase
@@ -156,7 +172,12 @@ export default function LoginPage() {
                     }
                   } catch (adminCheckError) {
                     console.warn("Could not check admin role:", adminCheckError)
-                    router.push("/dashboard")
+                    // If we cannot verify, prefer admin for default admin email
+                    if (session.user?.email === ADMIN_EMAIL) {
+                      window.location.href = "/admin"
+                    } else {
+                      router.push("/dashboard")
+                    }
                   }
                 }
               })
@@ -183,6 +204,15 @@ export default function LoginPage() {
     setError("")
     setMessage("")
   }, [isAdminMode])
+
+  // Countdown for signup rate limiting (429) messages
+  useEffect(() => {
+    if (signupCooldown <= 0) return
+    const timer = setInterval(() => {
+      setSignupCooldown((s) => (s > 0 ? s - 1 : 0))
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [signupCooldown])
 
   // Generate strong password
   const generateStrongPassword = () => {
@@ -565,15 +595,69 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
           // Allow registration if we can't check the setting
         }
 
-        const { error } = await supabase.auth.signUp({
+        const { data: signUpData, error } = await supabase.auth.signUp({
           email,
           password,
+          options: {
+            emailRedirectTo: typeof window !== "undefined" ? `${window.location.origin}` : undefined,
+          },
         })
 
         if (error) {
+          console.warn("Signup error:", error)
+          // Gracefully fall back when Supabase auth returns server/internal errors (e.g., SMTP not configured)
+          const status = (error as any)?.status
+          const isServerError = typeof status === "number" && status >= 500
+          const looksLikeEmailIssue = /smtp|mail|email/i.test(error.message || "")
+          const isRateLimited = status === 429 || /seconds|rate limit|too many/i.test(error.message || "")
+
+          if (isRateLimited) {
+            const match = /after\s+(\d+)\s+seconds/i.exec(error.message || "")
+            const seconds = match ? parseInt(match[1], 10) : 60
+            setSignupCooldown(seconds)
+            setError(`Please wait ${seconds}s before requesting signup again.`)
+            setLoading(false)
+            return
+          }
+
+          if (isServerError || looksLikeEmailIssue) {
+            // Use demo mode so users can proceed without being blocked in dev
+            try {
+              localStorage.setItem("user", JSON.stringify({ email, isAuthenticated: true }))
+              setSupabaseAvailable(false)
+              setMessage(
+                "Supabase signup encountered a server error. Proceeding in demo mode; account is not persisted.",
+              )
+              router.push("/dashboard")
+              return
+            } catch (_) {
+              // If localStorage fails, show the original error
+            }
+          }
+
           setError(error.message)
         } else {
-          setMessage("Check your email for the confirmation link!")
+          // Best effort: create/update profile right away so dashboard loads without errors
+          try {
+            // Only attempt profile upsert if we have an authenticated session
+            const { data: sess } = await supabase.auth.getSession()
+            const userId = signUpData?.user?.id
+            const hasSession = !!sess?.session
+            if (userId && hasSession) {
+              await supabase.from("profiles").upsert({ id: userId, balance: 100000.0 })
+            }
+
+            if (hasSession) {
+              setMessage("Account created! You're signed in. Redirecting to dashboard...")
+              // brief pause to show success then navigate
+              setTimeout(() => router.push("/dashboard"), 800)
+            } else {
+              setMessage("Account created! Please check your email to confirm your account.")
+            }
+          } catch (profileErr) {
+            console.warn("Non-blocking: could not create profile after signup", profileErr)
+            setMessage("Account created! Please check your email to confirm your account.")
+          }
         }
       }
     } catch (err: any) {
@@ -870,8 +954,16 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
               </Alert>
             )}
 
-            <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? "Loading..." : isAdminMode ? "Admin Login" : isLogin ? "Sign In" : "Sign Up"}
+            <Button type="submit" className="w-full" disabled={loading || signupCooldown > 0}>
+              {loading
+                ? "Loading..."
+                : isAdminMode
+                  ? "Admin Login"
+                  : isLogin
+                    ? "Sign In"
+                    : signupCooldown > 0
+                      ? `Wait ${signupCooldown}s`
+                      : "Sign Up"}
             </Button>
           </form>
 

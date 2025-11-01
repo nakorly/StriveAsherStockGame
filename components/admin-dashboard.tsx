@@ -205,27 +205,57 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
           market_open_time: "09:30:00",
           market_close_time: "16:00:00",
           timezone: "America/New_York",
-          trading_days: [1,2,3,4,5],
-          is_market_open_override: null
+          trading_days: [1, 2, 3, 4, 5],
+          is_market_open_override: null,
         })
         return
       }
 
-      const { data, error } = await supabase.from("market_settings").select("*").single()
+      // Fetch at most one row to avoid 406 from .single() when no rows exist
+      const { data: rows, error } = await supabase
+        .from("market_settings")
+        .select("*")
+        .limit(1)
 
       if (error) {
         console.warn("Error loading market settings:", error)
-        // Use defaults if no market settings found
-        setMarketSettings({
-          market_open_time: "09:30:00",
-          market_close_time: "16:00:00",
-          timezone: "America/New_York",
-          trading_days: [1,2,3,4,5],
-          is_market_open_override: null
-        })
-      } else {
-        setMarketSettings(data)
       }
+
+      if (rows && rows.length > 0) {
+        setMarketSettings(rows[0] as any)
+        return
+      }
+
+      // If no row exists, create a default one so updates have an id
+      const defaults = {
+        market_open_time: "09:30:00",
+        market_close_time: "16:00:00",
+        timezone: "America/New_York",
+        trading_days: [1, 2, 3, 4, 5],
+        is_market_open_override: null as boolean | null,
+        created_by: user.id,
+        updated_by: user.id,
+      }
+
+      const { data: inserted, error: insertError } = await supabase
+        .from("market_settings")
+        .insert(defaults)
+        .select("*")
+        .single()
+
+      if (insertError) {
+        console.warn("Could not create default market settings:", insertError)
+        setMarketSettings({
+          market_open_time: defaults.market_open_time,
+          market_close_time: defaults.market_close_time,
+          timezone: defaults.timezone,
+          trading_days: defaults.trading_days,
+          is_market_open_override: defaults.is_market_open_override,
+        })
+        return
+      }
+
+      setMarketSettings(inserted as any)
     } catch (err) {
       console.error("Error loading market settings:", err)
     }
@@ -301,16 +331,52 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
     try {
       const { getSupabase } = await import("@/lib/supabase")
       const supabase = await getSupabase()
-      const { error } = await supabase
-        .from("market_settings")
-        .update({
-          ...newSettings,
-          updated_at: new Date().toISOString(),
-          updated_by: user.id,
-        })
-        .eq("id", marketSettings?.id)
+      
+      // Ensure there is a settings row to update (query directly to avoid state races)
+      let targetId = marketSettings?.id as string | undefined
+      if (!targetId) {
+        const { data: rows, error: findError } = await supabase
+          .from("market_settings")
+          .select("id")
+          .limit(1)
 
-      if (error) throw error
+        if (findError) throw findError
+        if (rows && rows.length > 0) {
+          targetId = (rows[0] as any).id
+        }
+      }
+
+      if (targetId) {
+        const { error } = await supabase
+          .from("market_settings")
+          .update({
+            ...newSettings,
+            updated_at: new Date().toISOString(),
+            updated_by: user.id,
+          })
+          .eq("id", targetId)
+        
+        if (error) throw error
+      } else {
+        // Insert a row with the new settings applied
+        const { data: inserted, error: insertError } = await supabase
+          .from("market_settings")
+          .insert({
+            market_open_time: "09:30:00",
+            market_close_time: "16:00:00",
+            timezone: "America/New_York",
+            trading_days: [1, 2, 3, 4, 5],
+            is_market_open_override: null,
+            ...newSettings,
+            created_by: user.id,
+            updated_by: user.id,
+          })
+          .select("*")
+          .single()
+
+        if (insertError) throw insertError
+        targetId = (inserted as any).id
+      }
 
       // Log admin activity
       await supabase.from("admin_activity_log").insert({
@@ -1173,16 +1239,24 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                   <Label>Game Start Date</Label>
                   <Input
                     type="date"
-                    value={gameSettings.game_start_date ? JSON.parse(gameSettings.game_start_date) : "2024-01-01"}
-                    onChange={(e) => updateGameSettings("game_start_date", JSON.stringify(e.target.value))}
+                    value={
+                      typeof gameSettings.game_start_date === "string" && gameSettings.game_start_date
+                        ? gameSettings.game_start_date
+                        : "2024-01-01"
+                    }
+                    onChange={(e) => updateGameSettings("game_start_date", e.target.value)}
                   />
                 </div>
                 <div>
                   <Label>Game End Date</Label>
                   <Input
                     type="date"
-                    value={gameSettings.game_end_date ? JSON.parse(gameSettings.game_end_date) : "2024-12-31"}
-                    onChange={(e) => updateGameSettings("game_end_date", JSON.stringify(e.target.value))}
+                    value={
+                      typeof gameSettings.game_end_date === "string" && gameSettings.game_end_date
+                        ? gameSettings.game_end_date
+                        : "2024-12-31"
+                    }
+                    onChange={(e) => updateGameSettings("game_end_date", e.target.value)}
                   />
                 </div>
               </div>
