@@ -310,7 +310,14 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
       const { getSupabase } = await import("@/lib/supabase")
       const supabase = await getSupabase()
 
-      // Update leaderboard first
+      // First, refresh all portfolio prices from the latest cache
+      try {
+        await supabase.rpc("update_portfolios_from_latest_prices")
+      } catch (e) {
+        console.warn("Could not refresh portfolios from latest prices:", e)
+      }
+
+      // Then, rebuild leaderboard with up-to-date portfolio values
       await supabase.rpc("update_leaderboard_with_usernames")
 
       const { data, error } = await supabase
