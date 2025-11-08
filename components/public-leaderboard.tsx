@@ -5,6 +5,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Trophy, Medal, Award } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 
 interface LeaderboardEntry {
   rank: number
@@ -21,6 +23,11 @@ export function PublicLeaderboard() {
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const [detailsLoading, setDetailsLoading] = useState(false)
+  const [selectedUser, setSelectedUser] = useState<{ id: string; name: string } | null>(null)
+  const [holdings, setHoldings] = useState<Array<{ symbol: string; name: string; shares: number; price: number; purchase_price: number; total_value: number; change: number; change_percent: number }>>([])
+  const [history, setHistory] = useState<Array<{ year: number; month: number; start_total_value: number; end_total_value: number; return_percent: number; updated_at: string }>>([])
 
   useEffect(() => {
     loadLeaderboard()
@@ -53,7 +60,7 @@ export function PublicLeaderboard() {
       const { data, error } = await supabase
         .from("leaderboard")
         .select("*")
-        .order("rank", { ascending: true })
+        .order("total_gain_loss_percent", { ascending: false })
         .limit(10)
 
       if (error) throw error
@@ -64,6 +71,28 @@ export function PublicLeaderboard() {
       loadDemoData()
     } finally {
       setLoading(false)
+    }
+  }
+
+  const openDetails = async (entry: LeaderboardEntry) => {
+    setSelectedUser({ id: entry.user_id, name: entry.display_name || entry.username })
+    setDetailsOpen(true)
+    setDetailsLoading(true)
+    try {
+      const res = await fetch(`/api/leaderboard-details?user_id=${encodeURIComponent(entry.user_id)}`)
+      const data = await res.json()
+      if (data.success) {
+        setHoldings(data.holdings || [])
+        setHistory(data.history || [])
+      } else {
+        setHoldings([])
+        setHistory([])
+      }
+    } catch (e) {
+      setHoldings([])
+      setHistory([])
+    } finally {
+      setDetailsLoading(false)
     }
   }
 
@@ -147,7 +176,7 @@ export function PublicLeaderboard() {
           <Trophy className="h-5 w-5" />
           Leaderboard
         </CardTitle>
-        <CardDescription>Top performing traders in the game</CardDescription>
+        <CardDescription>Ranked by month-to-date return %</CardDescription>
       </CardHeader>
       <CardContent>
         {leaderboard.length === 0 ? (
@@ -161,18 +190,19 @@ export function PublicLeaderboard() {
               <TableRow>
                 <TableHead>Rank</TableHead>
                 <TableHead>Trader</TableHead>
-                <TableHead>Total Value</TableHead>
-                <TableHead>Gain/Loss</TableHead>
-                <TableHead>Return %</TableHead>
+                <TableHead>Return % (MTD)</TableHead>
+                <TableHead>Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {leaderboard.map((entry) => (
+              {leaderboard.map((entry, i) => {
+                const displayedRank = i + 1
+                return (
                 <TableRow key={entry.user_id}>
                   <TableCell>
                     <div className="flex items-center gap-2">
-                      {getRankIcon(entry.rank)}
-                      {getRankBadge(entry.rank)}
+                      {getRankIcon(displayedRank)}
+                      {getRankBadge(displayedRank)}
                     </div>
                   </TableCell>
                   <TableCell>
@@ -183,26 +213,93 @@ export function PublicLeaderboard() {
                       )}
                     </div>
                   </TableCell>
-                  <TableCell className="font-medium">
-                    ${entry.total_value.toLocaleString()}
-                  </TableCell>
-                  <TableCell>
-                    <div className={`font-medium ${entry.total_gain_loss >= 0 ? "text-green-600" : "text-red-600"}`}>
-                      {entry.total_gain_loss >= 0 ? "+" : ""}${entry.total_gain_loss.toLocaleString()}
-                    </div>
-                  </TableCell>
                   <TableCell>
                     <div className={`font-medium ${entry.total_gain_loss_percent >= 0 ? "text-green-600" : "text-red-600"}`}>
                       {entry.total_gain_loss_percent >= 0 ? "+" : ""}
                       {entry.total_gain_loss_percent.toFixed(2)}%
                     </div>
                   </TableCell>
+                  <TableCell>
+                    <Button variant="outline" size="sm" onClick={() => openDetails(entry)}>
+                      View Details
+                    </Button>
+                  </TableCell>
                 </TableRow>
-              ))}
+              )})}
             </TableBody>
           </Table>
         )}
       </CardContent>
+      <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
+        <DialogContent className="sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Trader Details</DialogTitle>
+            <DialogDescription>
+              {selectedUser ? `Holdings and monthly performance for ${selectedUser.name}` : ""}
+            </DialogDescription>
+          </DialogHeader>
+          {detailsLoading ? (
+            <div className="py-6 text-center text-gray-500">Loading details...</div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <h3 className="font-semibold mb-2">Current Holdings</h3>
+                {holdings.length === 0 ? (
+                  <div className="text-sm text-gray-500">No holdings to display.</div>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Symbol</TableHead>
+                        <TableHead>Shares</TableHead>
+                        <TableHead>Value</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {holdings.map((h) => (
+                        <TableRow key={h.symbol}>
+                          <TableCell className="font-medium">{h.symbol}</TableCell>
+                          <TableCell>{h.shares}</TableCell>
+                          <TableCell>${(h.total_value || 0).toLocaleString()}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </div>
+              <div>
+                <h3 className="font-semibold mb-2">Previous Months</h3>
+                {history.length === 0 ? (
+                  <div className="text-sm text-gray-500">No monthly history.</div>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Period</TableHead>
+                        <TableHead>Start</TableHead>
+                        <TableHead>End</TableHead>
+                        <TableHead>Return</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {history.map((r) => (
+                        <TableRow key={`${r.year}-${r.month}`}>
+                          <TableCell>{r.year}-{String(r.month).padStart(2, '0')}</TableCell>
+                          <TableCell>${Number(r.start_total_value || 0).toLocaleString()}</TableCell>
+                          <TableCell>${Number(r.end_total_value || 0).toLocaleString()}</TableCell>
+                          <TableCell className={r.return_percent >= 0 ? 'text-green-600' : 'text-red-600'}>
+                            {Number(r.return_percent || 0).toFixed(2)}%
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </Card>
   )
 }

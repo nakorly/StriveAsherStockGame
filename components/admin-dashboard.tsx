@@ -90,6 +90,12 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
   const [newStockSymbol, setNewStockSymbol] = useState("")
   const [newStockName, setNewStockName] = useState("")
   const [newStockPrice, setNewStockPrice] = useState("")
+  // Leaderboard details state
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const [detailsLoading, setDetailsLoading] = useState(false)
+  const [detailsUser, setDetailsUser] = useState<{ id: string; name: string } | null>(null)
+  const [detailsHoldings, setDetailsHoldings] = useState<Array<{ symbol: string; name: string; shares: number; price: number; purchase_price: number; total_value: number; change: number; change_percent: number }>>([])
+  const [detailsHistory, setDetailsHistory] = useState<Array<{ year: number; month: number; start_total_value: number; end_total_value: number; return_percent: number; updated_at: string }>>([])
 
   useEffect(() => {
     loadAdminData()
@@ -323,7 +329,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
       const { data, error } = await supabase
         .from("leaderboard")
         .select("*")
-        .order("rank", { ascending: true })
+        .order("total_gain_loss_percent", { ascending: false })
         .limit(20)
 
       if (error) throw error
@@ -331,6 +337,28 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
       setLeaderboard(data || [])
     } catch (err) {
       console.error("Error loading leaderboard:", err)
+    }
+  }
+
+  const openLeaderboardDetails = async (entry: LeaderboardEntry) => {
+    setDetailsUser({ id: entry.user_id, name: entry.display_name || entry.username })
+    setDetailsOpen(true)
+    setDetailsLoading(true)
+    try {
+      const res = await fetch(`/api/leaderboard-details?user_id=${encodeURIComponent(entry.user_id)}`)
+      const data = await res.json()
+      if (data.success) {
+        setDetailsHoldings(data.holdings || [])
+        setDetailsHistory(data.history || [])
+      } else {
+        setDetailsHoldings([])
+        setDetailsHistory([])
+      }
+    } catch (e) {
+      setDetailsHoldings([])
+      setDetailsHistory([])
+    } finally {
+      setDetailsLoading(false)
     }
   }
 
@@ -1279,7 +1307,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                 <Trophy className="h-5 w-5" />
                 Leaderboard
               </CardTitle>
-              <CardDescription>Top performing traders</CardDescription>
+              <CardDescription>Ranked by month-to-date return %</CardDescription>
             </CardHeader>
             <CardContent>
               <Table>
@@ -1287,28 +1315,30 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                   <TableRow>
                     <TableHead>Rank</TableHead>
                     <TableHead>User</TableHead>
-                    <TableHead>Total Value</TableHead>
-                    <TableHead>Gain/Loss</TableHead>
-                    <TableHead>Return %</TableHead>
+                  <TableHead>Return % (MTD)</TableHead>
+                  <TableHead>Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {leaderboard.map((entry) => (
-                    <TableRow key={entry.rank}>
+                  {leaderboard.map((entry, i) => {
+                    const displayedRank = i + 1
+                    return (
+                    <TableRow key={entry.user_id || i}>
                       <TableCell>
-                        <Badge variant={entry.rank <= 3 ? "default" : "secondary"}>#{entry.rank}</Badge>
+                        <Badge variant={displayedRank <= 3 ? "default" : "secondary"}>#{displayedRank}</Badge>
                       </TableCell>
                       <TableCell>{entry.display_name || entry.username || `User ${entry.user_id.slice(-4)}`}</TableCell>
-                      <TableCell>${entry.total_value.toLocaleString()}</TableCell>
-                      <TableCell className={entry.total_gain_loss >= 0 ? "text-green-600" : "text-red-600"}>
-                        {entry.total_gain_loss >= 0 ? "+" : ""}${entry.total_gain_loss.toLocaleString()}
-                      </TableCell>
                       <TableCell className={entry.total_gain_loss_percent >= 0 ? "text-green-600" : "text-red-600"}>
                         {entry.total_gain_loss_percent >= 0 ? "+" : ""}
                         {entry.total_gain_loss_percent.toFixed(2)}%
                       </TableCell>
+                      <TableCell>
+                        <Button variant="outline" size="sm" onClick={() => openLeaderboardDetails(entry)}>
+                          View Details
+                        </Button>
+                      </TableCell>
                     </TableRow>
-                  ))}
+                  )})}
                 </TableBody>
               </Table>
             </CardContent>
@@ -1355,6 +1385,79 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
             </CardContent>
           </Card>
         )}
+
+        {/* Balance Adjustment Dialog */}
+        {/* Leaderboard Details Dialog */}
+        <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
+          <DialogContent className="sm:max-w-3xl">
+            <DialogHeader>
+              <DialogTitle>Trader Details</DialogTitle>
+              <DialogDescription>
+                {detailsUser ? `Holdings and monthly performance for ${detailsUser.name}` : ''}
+              </DialogDescription>
+            </DialogHeader>
+            {detailsLoading ? (
+              <div className="py-6 text-center text-gray-500">Loading details...</div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <h3 className="font-semibold mb-2">Current Holdings</h3>
+                  {detailsHoldings.length === 0 ? (
+                    <div className="text-sm text-gray-500">No holdings to display.</div>
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Symbol</TableHead>
+                          <TableHead>Shares</TableHead>
+                          <TableHead>Value</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {detailsHoldings.map((h) => (
+                          <TableRow key={h.symbol}>
+                            <TableCell className="font-medium">{h.symbol}</TableCell>
+                            <TableCell>{h.shares}</TableCell>
+                            <TableCell>${(h.total_value || 0).toLocaleString()}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                </div>
+                <div>
+                  <h3 className="font-semibold mb-2">Previous Months</h3>
+                  {detailsHistory.length === 0 ? (
+                    <div className="text-sm text-gray-500">No monthly history.</div>
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Period</TableHead>
+                          <TableHead>Start</TableHead>
+                          <TableHead>End</TableHead>
+                          <TableHead>Return</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {detailsHistory.map((r) => (
+                          <TableRow key={`${r.year}-${r.month}`}>
+                            <TableCell>{r.year}-{String(r.month).padStart(2, '0')}</TableCell>
+                            <TableCell>${Number(r.start_total_value || 0).toLocaleString()}</TableCell>
+                            <TableCell>${Number(r.end_total_value || 0).toLocaleString()}</TableCell>
+                            <TableCell className={r.return_percent >= 0 ? 'text-green-600' : 'text-red-600'}>
+                              {Number(r.return_percent || 0).toFixed(2)}%
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                </div>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
 
         {/* Balance Adjustment Dialog */}
         <Dialog open={isBalanceDialogOpen} onOpenChange={setIsBalanceDialogOpen}>

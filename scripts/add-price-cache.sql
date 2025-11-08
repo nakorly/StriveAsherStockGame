@@ -143,3 +143,144 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION update_portfolios_from_latest_prices() TO authenticated;
+
+-- Monthly performance tracking: baseline-per-month and MTD return
+CREATE TABLE IF NOT EXISTS monthly_performance (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+  year INTEGER NOT NULL,
+  month INTEGER NOT NULL,
+  start_total_value DECIMAL(15,2) NOT NULL,
+  end_total_value DECIMAL(15,2) NOT NULL DEFAULT 0,
+  return_percent DECIMAL(8,4) NOT NULL DEFAULT 0,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE(user_id, year, month)
+);
+
+ALTER TABLE monthly_performance ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Everyone can view monthly performance" ON monthly_performance;
+CREATE POLICY "Everyone can view monthly performance" ON monthly_performance
+  FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Authenticated can upsert monthly performance" ON monthly_performance;
+CREATE POLICY "Authenticated can upsert monthly performance" ON monthly_performance
+  FOR INSERT WITH CHECK (auth.role() IN ('authenticated'));
+
+DROP POLICY IF EXISTS "Authenticated can update monthly performance" ON monthly_performance;
+CREATE POLICY "Authenticated can update monthly performance" ON monthly_performance
+  FOR UPDATE USING (auth.role() IN ('authenticated')) WITH CHECK (auth.role() IN ('authenticated'));
+
+CREATE INDEX IF NOT EXISTS monthly_performance_user_idx ON monthly_performance(user_id);
+CREATE INDEX IF NOT EXISTS monthly_performance_period_idx ON monthly_performance(year, month);
+
+-- Helper: current total value for a user
+CREATE OR REPLACE FUNCTION get_user_current_total(uid UUID)
+RETURNS DECIMAL AS $$
+DECLARE
+  bal NUMERIC := 0;
+  port NUMERIC := 0;
+BEGIN
+  SELECT COALESCE(balance, 0) INTO bal FROM profiles WHERE id = uid;
+  SELECT COALESCE(SUM(total_value), 0) INTO port FROM portfolios WHERE user_id = uid;
+  RETURN COALESCE(bal,0) + COALESCE(port,0);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION get_user_current_total(UUID) TO authenticated, anon;
+
+-- Ensure baseline row for current month for a user
+CREATE OR REPLACE FUNCTION ensure_monthly_baseline_for_user(uid UUID)
+RETURNS VOID AS $$
+DECLARE
+  y INT := EXTRACT(YEAR FROM NOW())::INT;
+  m INT := EXTRACT(MONTH FROM NOW())::INT;
+  cur_total NUMERIC := 0;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM monthly_performance WHERE user_id = uid AND year = y AND month = m
+  ) THEN
+    cur_total := get_user_current_total(uid);
+    INSERT INTO monthly_performance(user_id, year, month, start_total_value, end_total_value, return_percent)
+    VALUES(uid, y, m, cur_total, cur_total, 0);
+  END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION ensure_monthly_baseline_for_user(UUID) TO authenticated;
+
+-- Update MTD end_value and percent for all users
+CREATE OR REPLACE FUNCTION update_monthly_performance_all_users()
+RETURNS VOID AS $$
+DECLARE
+  rec RECORD;
+  y INT := EXTRACT(YEAR FROM NOW())::INT;
+  m INT := EXTRACT(MONTH FROM NOW())::INT;
+  cur_total NUMERIC;
+  start_total NUMERIC;
+  pct NUMERIC;
+BEGIN
+  FOR rec IN SELECT id FROM profiles LOOP
+    PERFORM ensure_monthly_baseline_for_user(rec.id);
+    cur_total := get_user_current_total(rec.id);
+    SELECT start_total_value INTO start_total FROM monthly_performance WHERE user_id = rec.id AND year = y AND month = m;
+    IF start_total IS NULL THEN
+      start_total := 0;
+    END IF;
+    IF start_total > 0 THEN
+      pct := ((cur_total - start_total) / start_total) * 100;
+    ELSE
+      pct := 0;
+    END IF;
+    UPDATE monthly_performance
+    SET end_total_value = cur_total,
+        return_percent = pct,
+        updated_at = NOW()
+    WHERE user_id = rec.id AND year = y AND month = m;
+  END LOOP;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION update_monthly_performance_all_users() TO authenticated;
+
+-- Replace leaderboard update to rank by month-to-date percent
+CREATE OR REPLACE FUNCTION update_leaderboard_with_usernames()
+RETURNS void AS $$
+DECLARE
+  y INT := EXTRACT(YEAR FROM NOW())::INT;
+  m INT := EXTRACT(MONTH FROM NOW())::INT;
+BEGIN
+  -- Sync portfolios with latest cache first (if function exists)
+  PERFORM 1 FROM pg_proc WHERE proname = 'update_portfolios_from_latest_prices';
+  IF FOUND THEN
+    PERFORM update_portfolios_from_latest_prices();
+  END IF;
+
+  -- Update monthly performance from current totals
+  PERFORM update_monthly_performance_all_users();
+
+  -- Clear and rebuild leaderboard ranked by monthly return percent
+  DELETE FROM leaderboard;
+
+  INSERT INTO leaderboard (user_id, username, display_name, total_value, total_gain_loss, total_gain_loss_percent, rank, updated_at)
+  SELECT 
+    p.id AS user_id,
+    COALESCE(p.username, 'User' || RIGHT(p.id::TEXT, 4)) AS username,
+    COALESCE(p.display_name, p.username, 'Anonymous') AS display_name,
+    (COALESCE(p.balance, 0) + COALESCE(pf.total_value, 0)) AS total_value,
+    ((COALESCE(p.balance, 0) + COALESCE(pf.total_value, 0)) - COALESCE(mp.start_total_value, 0)) AS mtd_gain_loss,
+    CASE WHEN COALESCE(mp.start_total_value, 0) > 0 THEN (((COALESCE(p.balance, 0) + COALESCE(pf.total_value, 0)) - mp.start_total_value) / mp.start_total_value) * 100 ELSE 0 END AS mtd_return_percent,
+    ROW_NUMBER() OVER (
+      ORDER BY CASE WHEN COALESCE(mp.start_total_value, 0) > 0 THEN (((COALESCE(p.balance, 0) + COALESCE(pf.total_value, 0)) - mp.start_total_value) / mp.start_total_value) ELSE 0 END DESC
+    ) AS rank,
+    NOW() AS updated_at
+  FROM profiles p
+  LEFT JOIN (
+    SELECT user_id, SUM(total_value) AS total_value FROM portfolios GROUP BY user_id
+  ) pf ON pf.user_id = p.id
+  LEFT JOIN monthly_performance mp ON mp.user_id = p.id AND mp.year = y AND mp.month = m;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION update_leaderboard_with_usernames() TO authenticated;
