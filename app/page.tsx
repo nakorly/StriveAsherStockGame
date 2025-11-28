@@ -51,7 +51,6 @@ export default function LoginPage() {
 
   // Admin credentials (hidden from UI)
   const ADMIN_EMAIL = "greencheez@proton.me"
-  const ADMIN_PASSWORD = "SecureTrader01!"
 
   // Password strength indicators
   const [passwordStrength, setPasswordStrength] = useState({
@@ -324,136 +323,6 @@ export default function LoginPage() {
     } catch (err) {
       console.error("Failed to copy password:", err)
     }
-  }
-
-  // Setup default admin account
-  const setupDefaultAdmin = async () => {
-    if (!supabaseAvailable) {
-      setError("Supabase is required for admin setup but is not available")
-      return
-    }
-
-    setLoading(true)
-    setError("")
-    setMessage("Setting up admin account...")
-
-    try {
-      const { getSupabase } = await import("@/lib/supabase")
-      const supabase = await getSupabase()
-
-      if (!supabase) {
-        throw new Error("Supabase client not available")
-      }
-
-      // First, try to sign up the admin user
-      setMessage("Creating admin account...")
-      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-        email: ADMIN_EMAIL,
-        password: ADMIN_PASSWORD,
-      })
-
-      let userId = signUpData?.user?.id
-
-      // Handle different signup scenarios
-      if (signUpError) {
-        if (signUpError.message.includes("already registered")) {
-          setMessage("Admin account exists, checking credentials...")
-
-          // Wait for rate limit to reset
-          await new Promise((resolve) => setTimeout(resolve, 8000))
-
-          // Try to sign in to get the user ID
-          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-            email: ADMIN_EMAIL,
-            password: ADMIN_PASSWORD,
-          })
-
-          if (signInError) {
-            if (signInError.message.includes("7 seconds")) {
-              setError("Please wait a moment and try again. Supabase has rate limiting on authentication requests.")
-              setLoading(false)
-              return
-            }
-            throw signInError
-          }
-          userId = signInData.user?.id
-        } else if (signUpError.message.includes("7 seconds")) {
-          setError("Please wait a moment and try again. Supabase has rate limiting on authentication requests.")
-          setLoading(false)
-          return
-        } else {
-          throw signUpError
-        }
-      }
-
-      if (!userId) {
-        throw new Error("Could not get user ID")
-      }
-
-      setMessage("Setting up admin privileges...")
-
-      // Wait a bit before making the next request
-      await new Promise((resolve) => setTimeout(resolve, 2000))
-
-      // Create profile first
-      await supabase.from("profiles").upsert({
-        id: userId,
-        balance: 1000000.0,
-      })
-
-      // Create admin role with proper JSON syntax
-      const { error: adminRoleError } = await supabase.from("admin_roles").upsert({
-        user_id: userId,
-        role: "SUPER_ADMIN",
-        permissions: JSON.stringify(["all"]),
-        created_by: userId,
-      })
-
-      if (adminRoleError && !adminRoleError.message.includes("duplicate")) {
-        throw adminRoleError
-      }
-
-      // Log the admin creation
-      await supabase.from("admin_activity_log").insert({
-        admin_id: userId,
-        action: "ADMIN_ACCOUNT_CREATED",
-        details: JSON.stringify({
-          type: "default_admin",
-          email: ADMIN_EMAIL,
-        }),
-      })
-
-      setMessage(`Admin account setup complete! 
-
-A confirmation email has been sent to the admin email address. 
-Please check the email and confirm the account, then contact the system administrator for login credentials.`)
-    } catch (err: any) {
-      console.error("Admin setup error:", err)
-      if (err.message.includes("7 seconds")) {
-        setError("Rate limit exceeded. Please wait 10 seconds and try again.")
-      } else if (err.message.includes("Supabase")) {
-        setError("Supabase connection failed. Please check your configuration.")
-        setSupabaseAvailable(false)
-      } else {
-        setError(`Failed to setup admin account: ${err.message}`)
-      }
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // Alternative setup method that just provides instructions
-  const showAdminInstructions = () => {
-    setMessage(`To set up admin access manually:
-      
-1. Contact the system administrator for admin credentials
-2. Sign up with the provided admin email and password
-3. Check your email for confirmation and confirm your account
-4. Wait 10 seconds after signup
-5. Come back and login through the Admin tab
-6. The system will automatically grant admin privileges on first login
-      
-Or wait 10 seconds and try the "Setup Admin" button again.`)
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -797,28 +666,6 @@ Or wait 10 seconds and try the "Setup Admin" button again.`)
             </Button>
           </div>
 
-          {/* Admin Setup Helper */}
-          {isAdminMode && supabaseAvailable && (
-            <Alert className="mb-4">
-              <Shield className="h-4 w-4" />
-              <AlertDescription>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span>Need to create the default admin account?</span>
-                    <div className="flex gap-2">
-                      <Button size="sm" variant="outline" onClick={setupDefaultAdmin} disabled={loading}>
-                        {loading ? "Setting up..." : "Auto Setup"}
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={showAdminInstructions} disabled={loading}>
-                        Manual Setup
-                      </Button>
-                    </div>
-                  </div>
-                  <div className="text-xs text-gray-600">Contact system administrator for admin credentials.</div>
-                </div>
-              </AlertDescription>
-            </Alert>
-          )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">

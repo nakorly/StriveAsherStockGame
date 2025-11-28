@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -55,6 +55,12 @@ interface QueuedOrder {
   created_at: string
 }
 
+interface MarketStatusDetails {
+  isOpen: boolean
+  nextEvent: string
+  timeUntil: string
+}
+
 export default function Dashboard() {
   const [user, setUser] = useState<User | null>(null)
   const [userProfile, setUserProfile] = useState<any>(null)
@@ -68,6 +74,11 @@ export default function Dashboard() {
   const [searching, setSearching] = useState(false)
   const [isMarketOpen, setIsMarketOpen] = useState(true)
   const [marketStatus, setMarketStatus] = useState("Market Open")
+  const [marketStatusDetails, setMarketStatusDetails] = useState<MarketStatusDetails>({
+    isOpen: true,
+    nextEvent: "Market opens",
+    timeUntil: "time unknown",
+  })
   const [buyDialogOpen, setBuyDialogOpen] = useState(false)
   const [selectedStock, setSelectedStock] = useState<Stock | null>(null)
   const [buyShares, setBuyShares] = useState("")
@@ -76,6 +87,7 @@ export default function Dashboard() {
   const [isProfileDialogOpen, setIsProfileDialogOpen] = useState(false)
   const [username, setUsername] = useState("")
   const [displayName, setDisplayName] = useState("")
+  const processingQueuedOrders = useRef(false)
   const router = useRouter()
 
   useEffect(() => {
@@ -341,6 +353,147 @@ export default function Dashboard() {
     }
   }
 
+  const processQueuedOrders = async () => {
+    if (!user || !isMarketOpen || queuedOrders.length === 0 || processingQueuedOrders.current) {
+      return
+    }
+
+    const pendingOrders = queuedOrders.filter((order) => order.status === "PENDING")
+    if (pendingOrders.length === 0) return
+
+    processingQueuedOrders.current = true
+
+    try {
+      const { getSupabase, isSupabaseConfigured } = await import("@/lib/supabase")
+
+      // Demo mode: execute locally and clear queue
+      if (!isSupabaseConfigured()) {
+        let updatedBalance = balance
+        const updatedPortfolio = [...portfolio]
+
+        for (const order of pendingOrders) {
+          const price = order.order_price ?? 0
+          if (order.order_type === "BUY") {
+            updatedBalance -= price * order.shares
+            const existing = updatedPortfolio.find((p) => p.symbol === order.symbol)
+            if (existing) {
+              existing.shares += order.shares
+              existing.total_value = existing.shares * price
+            } else {
+              updatedPortfolio.push({
+                id: order.id,
+                symbol: order.symbol,
+                name: order.name,
+                shares: order.shares,
+                purchase_price: price,
+                current_price: price,
+                total_value: price * order.shares,
+                gain_loss: 0,
+                gain_loss_percent: 0,
+              })
+            }
+          } else {
+            const existing = updatedPortfolio.find((p) => p.symbol === order.symbol)
+            if (existing && existing.shares >= order.shares) {
+              existing.shares -= order.shares
+              existing.total_value = existing.shares * price
+              updatedBalance += price * order.shares
+            }
+          }
+        }
+
+        setBalance(updatedBalance)
+        setPortfolio(updatedPortfolio.filter((p) => p.shares > 0))
+        setQueuedOrders((prev) => prev.filter((o) => o.status !== "PENDING"))
+        return
+      }
+
+      const supabase = await getSupabase()
+      if (!supabase || !supabase.from || typeof supabase.from !== "function") {
+        return
+      }
+
+      const { data: profileData } = await supabase.from("profiles").select("balance").eq("id", user.id).single()
+      let currentBalance = profileData?.balance ?? balance
+
+      for (const order of pendingOrders) {
+        const price = order.order_price ?? 0
+
+        if (order.order_type === "BUY") {
+          const cost = price * order.shares
+          if (currentBalance < cost) {
+            continue
+          }
+
+          const existing = portfolio.find((p) => p.symbol === order.symbol)
+          const newShares = (existing?.shares ?? 0) + order.shares
+          const totalValue = price * newShares
+
+          await supabase.from("portfolios").upsert({
+            user_id: user.id,
+            symbol: order.symbol,
+            name: order.name,
+            price,
+            change: 0,
+            change_percent: 0,
+            shares: newShares,
+            purchase_price: existing?.purchase_price ?? price,
+            total_value: totalValue,
+          })
+
+          await supabase.from("profiles").update({ balance: currentBalance - cost }).eq("id", user.id)
+          currentBalance -= cost
+        } else {
+          const existing = portfolio.find((p) => p.symbol === order.symbol)
+          if (!existing || existing.shares < order.shares) {
+            continue
+          }
+
+          const revenue = price * order.shares
+          const remainingShares = existing.shares - order.shares
+
+          if (remainingShares > 0) {
+            await supabase.from("portfolios").upsert({
+              user_id: user.id,
+              symbol: order.symbol,
+              name: order.name,
+              price: existing.current_price,
+              change: 0,
+              change_percent: 0,
+              shares: remainingShares,
+              purchase_price: existing.purchase_price,
+              total_value: remainingShares * (existing.current_price || price),
+            })
+          } else {
+            await supabase.from("portfolios").delete().eq("user_id", user.id).eq("symbol", order.symbol)
+          }
+
+          await supabase.from("profiles").update({ balance: currentBalance + revenue }).eq("id", user.id)
+          currentBalance += revenue
+        }
+
+        await supabase
+          .from("queued_orders")
+          .update({
+            status: "EXECUTED",
+            executed_at: new Date().toISOString(),
+            execution_price: price,
+          })
+          .eq("id", order.id)
+      }
+
+      await Promise.all([
+        loadUserData(supabase, user.id),
+        loadPortfolio(supabase, user.id),
+        loadQueuedOrders(supabase, user.id),
+      ])
+    } catch (err) {
+      console.error("Error processing queued orders:", err)
+    } finally {
+      processingQueuedOrders.current = false
+    }
+  }
+
   const updateMarketStatus = async (supabase: any) => {
     try {
       if (!supabase || !supabase.from || typeof supabase.from !== "function") {
@@ -368,6 +521,13 @@ export default function Dashboard() {
 
         setIsMarketOpen(marketOpen)
         setMarketStatus(marketOpen ? "Market Open" : "Market Closed")
+        const nextEvent = marketOpen ? "Market closes" : "Market opens"
+        const nextEventTime = marketOpen ? marketSettings.market_close_time : marketSettings.market_open_time
+        setMarketStatusDetails({
+          isOpen: marketOpen,
+          nextEvent,
+          timeUntil: nextEventTime || "time unavailable",
+        })
       }
     } catch (err) {
       console.error("Error in updateMarketStatus:", err)
@@ -393,6 +553,43 @@ export default function Dashboard() {
       setSearchResults([])
     } finally {
       setSearching(false)
+    }
+  }
+
+  useEffect(() => {
+    processQueuedOrders()
+  }, [isMarketOpen, queuedOrders, user])
+
+  const cancelQueuedOrder = async (orderId: string) => {
+    if (!user) return
+
+    try {
+      const { getSupabase, isSupabaseConfigured } = await import("@/lib/supabase")
+
+      if (!isSupabaseConfigured()) {
+        setQueuedOrders((prev) => prev.filter((order) => order.id !== orderId))
+        return
+      }
+
+      const supabase = await getSupabase()
+      if (!supabase || !supabase.from || typeof supabase.from !== "function") {
+        return
+      }
+
+      const { error } = await supabase
+        .from("queued_orders")
+        .update({ status: "CANCELLED" })
+        .eq("id", orderId)
+        .eq("user_id", user.id)
+
+      if (error) {
+        console.error("Error cancelling queued order:", error)
+        return
+      }
+
+      await loadQueuedOrders(supabase, user.id)
+    } catch (err) {
+      console.error("Error cancelling queued order:", err)
     }
   }
 
@@ -762,25 +959,8 @@ export default function Dashboard() {
           <TabsContent value="orders">
             <QueuedOrders
               orders={queuedOrders}
-              onOrdersUpdate={() => {
-                if (user) {
-                  const updateOrders = async () => {
-                    try {
-                      const { getSupabase, isSupabaseConfigured } = await import("@/lib/supabase")
-
-                      if (!isSupabaseConfigured()) return
-
-                      const supabase = await getSupabase()
-                      if (supabase && supabase.from && typeof supabase.from === "function") {
-                        await loadQueuedOrders(supabase, user.id)
-                      }
-                    } catch (err) {
-                      console.error("Error updating orders:", err)
-                    }
-                  }
-                  updateOrders()
-                }
-              }}
+              onCancelOrder={cancelQueuedOrder}
+              marketStatus={marketStatusDetails}
             />
           </TabsContent>
 

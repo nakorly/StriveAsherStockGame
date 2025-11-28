@@ -23,16 +23,22 @@ interface QueuedOrder {
 
 interface QueuedOrdersProps {
   orders: QueuedOrder[]
-  onCancelOrder: (orderId: string) => Promise<void>
-  marketStatus: {
+  onCancelOrder?: (orderId: string) => Promise<void>
+  marketStatus?: {
     isOpen: boolean
-    nextEvent: string
-    timeUntil: string
+    nextEvent?: string
+    timeUntil?: string
   }
 }
 
 export function QueuedOrders({ orders, onCancelOrder, marketStatus }: QueuedOrdersProps) {
   const [cancellingOrders, setCancellingOrders] = useState<Set<string>>(new Set())
+  const safeMarketStatus =
+    marketStatus ?? ({
+      isOpen: true,
+      nextEvent: "Next session",
+      timeUntil: "unknown",
+    } as const)
 
   const pendingOrders = orders.filter((order) => order.status === "PENDING")
   const recentExecutedOrders = orders.filter(
@@ -43,6 +49,8 @@ export function QueuedOrders({ orders, onCancelOrder, marketStatus }: QueuedOrde
   )
 
   const handleCancelOrder = async (orderId: string) => {
+    if (!onCancelOrder) return
+
     setCancellingOrders((prev) => new Set(prev).add(orderId))
     try {
       await onCancelOrder(orderId)
@@ -72,18 +80,21 @@ export function QueuedOrders({ orders, onCancelOrder, marketStatus }: QueuedOrde
             <CardDescription>Orders waiting to execute when market opens</CardDescription>
           </CardHeader>
           <CardContent>
-            <Alert className="mb-4">
-              <Clock className="h-4 w-4" />
-              <AlertDescription>
-                <strong>Market is closed.</strong> Your orders will execute when the market opens.
-                {!marketStatus.isOpen && (
-                  <span>
-                    {" "}
-                    {marketStatus.nextEvent} in {marketStatus.timeUntil}.
-                  </span>
-                )}
-              </AlertDescription>
-            </Alert>
+            {!safeMarketStatus.isOpen && (
+              <Alert className="mb-4">
+                <Clock className="h-4 w-4" />
+                <AlertDescription>
+                  <strong>Market is closed.</strong> Your orders will execute when the market opens.
+                  {safeMarketStatus.nextEvent && (
+                    <span>
+                      {" "}
+                      Next: {safeMarketStatus.nextEvent}
+                      {safeMarketStatus.timeUntil ? ` (${safeMarketStatus.timeUntil})` : ""}.
+                    </span>
+                  )}
+                </AlertDescription>
+              </Alert>
+            )}
 
             <Table>
               <TableHeader>
@@ -123,7 +134,7 @@ export function QueuedOrders({ orders, onCancelOrder, marketStatus }: QueuedOrde
                         variant="outline"
                         size="sm"
                         onClick={() => handleCancelOrder(order.id)}
-                        disabled={cancellingOrders.has(order.id)}
+                        disabled={!onCancelOrder || cancellingOrders.has(order.id)}
                       >
                         {cancellingOrders.has(order.id) ? (
                           "Cancelling..."
