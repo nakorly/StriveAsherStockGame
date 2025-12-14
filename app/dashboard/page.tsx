@@ -10,10 +10,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
-import { Loader2, Search, TrendingUp, TrendingDown, DollarSign, Activity, BarChart3, Plus, Minus, User as UserIcon, Edit } from "lucide-react"
+import { Loader2, Search, TrendingUp, TrendingDown, DollarSign, Activity, BarChart3, Plus, Minus, User as UserIcon, Edit, RefreshCw } from "lucide-react"
 import { SellStockDialog } from "@/components/sell-stock-dialog"
 import { QueuedOrders } from "@/components/queued-orders"
 import { PublicLeaderboard } from "@/components/public-leaderboard"
+import { PortfolioValueChart } from "@/components/portfolio-value-chart"
 import type { User } from "@supabase/supabase-js"
 
 interface Stock {
@@ -50,9 +51,11 @@ interface QueuedOrder {
   name: string
   order_type: "BUY" | "SELL"
   shares: number
-  order_price: number | null
+  order_price: number
   status: "PENDING" | "EXECUTED" | "CANCELLED"
   created_at: string
+  executed_at?: string
+  execution_price?: number
 }
 
 interface MarketStatusDetails {
@@ -65,6 +68,8 @@ export default function Dashboard() {
   const [user, setUser] = useState<User | null>(null)
   const [userProfile, setUserProfile] = useState<any>(null)
   const [balance, setBalance] = useState(10000)
+  const [startingBalance, setStartingBalance] = useState(100000)
+  const [refreshingPrices, setRefreshingPrices] = useState(false)
   const [portfolio, setPortfolio] = useState<Portfolio[]>([])
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([])
   const [queuedOrders, setQueuedOrders] = useState<QueuedOrder[]>([])
@@ -82,8 +87,8 @@ export default function Dashboard() {
   const [buyDialogOpen, setBuyDialogOpen] = useState(false)
   const [selectedStock, setSelectedStock] = useState<Stock | null>(null)
   const [buyShares, setBuyShares] = useState("")
-  const [sellDialogOpen, setSellDialogOpen] = useState(false)
-  const [selectedPortfolioItem, setSelectedPortfolioItem] = useState<Portfolio | null>(null)
+  const [sellStock, setSellStock] = useState<Portfolio | null>(null)
+  const [sellShares, setSellShares] = useState("")
   const [isProfileDialogOpen, setIsProfileDialogOpen] = useState(false)
   const [username, setUsername] = useState("")
   const [displayName, setDisplayName] = useState("")
@@ -188,7 +193,7 @@ export default function Dashboard() {
         return
       }
 
-      const { data, error } = await supabase.from("profiles").select("balance").eq("id", userId).single()
+      const { data, error } = await supabase.from("profiles").select("balance, starting_balance").eq("id", userId).single()
 
       if (error) {
         console.error("Error loading user data:", error)
@@ -197,6 +202,7 @@ export default function Dashboard() {
 
       if (data) {
         setBalance(data.balance)
+        setStartingBalance(data.starting_balance || 100000)
       }
     } catch (err) {
       console.error("Error in loadUserData:", err)
@@ -283,18 +289,26 @@ export default function Dashboard() {
       }
 
       if (data) {
-        const portfolioData = data.map((item: any) => ({
-          id: item.id,
-          symbol: item.symbol,
-          name: item.name,
-          shares: item.shares,
-          purchase_price: item.purchase_price,
-          current_price: item.price,
-          total_value: item.total_value,
-          gain_loss: item.total_value - item.purchase_price * item.shares,
-          gain_loss_percent:
-            ((item.total_value - item.purchase_price * item.shares) / (item.purchase_price * item.shares)) * 100,
-        }))
+        const portfolioData = data.map((item: any) => {
+          const current_price = item.price || item.purchase_price
+          const total_value = current_price * item.shares
+          const gain_loss = total_value - item.purchase_price * item.shares
+          const gain_loss_percent = item.purchase_price > 0
+            ? (gain_loss / (item.purchase_price * item.shares)) * 100
+            : 0
+          
+          return {
+            id: item.id,
+            symbol: item.symbol,
+            name: item.name,
+            shares: item.shares,
+            purchase_price: item.purchase_price,
+            current_price: current_price,
+            total_value: total_value,
+            gain_loss: gain_loss,
+            gain_loss_percent: gain_loss_percent,
+          }
+        })
         setPortfolio(portfolioData)
       }
     } catch (err) {
@@ -346,7 +360,12 @@ export default function Dashboard() {
       }
 
       if (data) {
-        setQueuedOrders(data)
+        // Map the data and ensure order_price is always a number
+        const mappedOrders = data.map((order: any) => ({
+          ...order,
+          order_price: order.order_price ?? 0,
+        }))
+        setQueuedOrders(mappedOrders)
       }
     } catch (err) {
       console.error("Error in loadQueuedOrders:", err)
@@ -556,9 +575,46 @@ export default function Dashboard() {
     }
   }
 
+  const refreshPortfolioPrices = async () => {
+    if (!user) return
+
+    setRefreshingPrices(true)
+    try {
+      const response = await fetch("/api/refresh-portfolio-prices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: user.id }),
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        // Reload portfolio data
+        const { getSupabase, isSupabaseConfigured } = await import("@/lib/supabase")
+        if (isSupabaseConfigured()) {
+          const supabase = await getSupabase()
+          if (supabase && supabase.from && typeof supabase.from === "function") {
+            await loadPortfolio(supabase, user.id)
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error refreshing prices:", error)
+    } finally {
+      setRefreshingPrices(false)
+    }
+  }
+
   useEffect(() => {
     processQueuedOrders()
   }, [isMarketOpen, queuedOrders, user])
+
+  // Auto-refresh prices on initial load
+  useEffect(() => {
+    if (user && portfolio.length > 0) {
+      refreshPortfolioPrices()
+    }
+  }, [user?.id])
 
   const cancelQueuedOrder = async (orderId: string) => {
     if (!user) return
@@ -716,6 +772,93 @@ export default function Dashboard() {
     }
   }
 
+  const handleSellStock = async () => {
+    if (!sellStock || !sellShares || !user) return
+
+    const shares = Number.parseInt(sellShares)
+    const sellPrice = sellStock.current_price
+    const totalRevenue = sellPrice * shares
+
+    if (shares > sellStock.shares) {
+      alert("Cannot sell more shares than you own")
+      return
+    }
+
+    try {
+      const { getSupabase, isSupabaseConfigured } = await import("@/lib/supabase")
+
+      if (!isSupabaseConfigured()) {
+        // Demo mode
+        const newBalance = balance + totalRevenue
+        setBalance(newBalance)
+
+        const updatedPortfolio = portfolio.map((p) => {
+          if (p.symbol === sellStock.symbol) {
+            const remainingShares = p.shares - shares
+            if (remainingShares <= 0) return null
+            return {
+              ...p,
+              shares: remainingShares,
+              total_value: remainingShares * p.current_price,
+            }
+          }
+          return p
+        }).filter(Boolean) as Portfolio[]
+
+        setPortfolio(updatedPortfolio)
+        setSellStock(null)
+        setSellShares("")
+        return
+      }
+
+      const supabase = await getSupabase()
+
+      if (!supabase || !supabase.from || typeof supabase.from !== "function") {
+        alert("Database not available")
+        return
+      }
+
+      if (isMarketOpen) {
+        // Execute immediately
+        const remainingShares = sellStock.shares - shares
+
+        if (remainingShares > 0) {
+          await supabase.from("portfolios").update({
+            shares: remainingShares,
+            total_value: remainingShares * sellPrice,
+          }).eq("id", sellStock.id)
+        } else {
+          await supabase.from("portfolios").delete().eq("id", sellStock.id)
+        }
+
+        await supabase.from("profiles").update({
+          balance: balance + totalRevenue
+        }).eq("id", user.id)
+
+        await loadUserData(supabase, user.id)
+        await loadPortfolio(supabase, user.id)
+      } else {
+        // Queue the order
+        await supabase.from("queued_orders").insert({
+          user_id: user.id,
+          symbol: sellStock.symbol,
+          name: sellStock.name,
+          order_type: "SELL",
+          shares: shares,
+          order_price: sellPrice,
+          status: "PENDING",
+        })
+
+        await loadQueuedOrders(supabase, user.id)
+      }
+
+      setSellStock(null)
+      setSellShares("")
+    } catch (error) {
+      console.error("Error selling stock:", error)
+    }
+  }
+
   const handleLogout = async () => {
     try {
       const { getSupabase, isSupabaseConfigured } = await import("@/lib/supabase")
@@ -769,7 +912,18 @@ export default function Dashboard() {
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Starting Balance</CardTitle>
+              <DollarSign className="h-4 w-4 text-blue-500" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-xl font-bold text-blue-600">${startingBalance.toLocaleString()}</div>
+              <p className="text-xs text-muted-foreground mt-1">Initial capital</p>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">Cash Balance</CardTitle>
@@ -833,8 +987,21 @@ export default function Dashboard() {
           <TabsContent value="portfolio">
             <Card>
               <CardHeader>
-                <CardTitle>Your Portfolio</CardTitle>
-                <CardDescription>Track your stock investments and performance</CardDescription>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle>Your Portfolio</CardTitle>
+                    <CardDescription>Track your stock investments and performance</CardDescription>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={refreshPortfolioPrices}
+                    disabled={refreshingPrices}
+                  >
+                    <RefreshCw className={`h-4 w-4 mr-2 ${refreshingPrices ? 'animate-spin' : ''}`} />
+                    {refreshingPrices ? 'Refreshing...' : 'Refresh Prices'}
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent>
                 {portfolio.length === 0 ? (
@@ -877,8 +1044,8 @@ export default function Dashboard() {
                               size="sm"
                               variant="outline"
                               onClick={() => {
-                                setSelectedPortfolioItem(item)
-                                setSellDialogOpen(true)
+                                setSellStock(item)
+                                setSellShares("")
                               }}
                             >
                               <Minus className="h-4 w-4 mr-1" />
@@ -892,6 +1059,13 @@ export default function Dashboard() {
                 )}
               </CardContent>
             </Card>
+
+            {/* Portfolio Value Chart */}
+            {user && (
+              <div className="mt-6">
+                <PortfolioValueChart userId={user.id} days={30} />
+              </div>
+            )}
           </TabsContent>
 
           <TabsContent value="search">
@@ -1047,38 +1221,41 @@ export default function Dashboard() {
         </Dialog>
 
         {/* Sell Stock Dialog */}
-        {selectedPortfolioItem && (
-          <SellStockDialog
-            open={sellDialogOpen}
-            onOpenChange={setSellDialogOpen}
-            portfolioItem={selectedPortfolioItem}
-            user={user}
-            isMarketOpen={isMarketOpen}
-            onSellComplete={() => {
-              if (user) {
-                const updateData = async () => {
-                  try {
-                    const { getSupabase, isSupabaseConfigured } = await import("@/lib/supabase")
-
-                    if (!isSupabaseConfigured()) return
-
-                    const supabase = await getSupabase()
-                    if (supabase && supabase.from && typeof supabase.from === "function") {
-                      await Promise.all([
-                        loadUserData(supabase, user.id),
-                        loadPortfolio(supabase, user.id),
-                        loadQueuedOrders(supabase, user.id),
-                      ])
-                    }
-                  } catch (err) {
-                    console.error("Error updating data after sell:", err)
-                  }
-                }
-                updateData()
-              }
-            }}
-          />
-        )}
+        <Dialog open={!!sellStock} onOpenChange={(open) => !open && setSellStock(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Sell {sellStock?.symbol}</DialogTitle>
+              <DialogDescription>Current price: ${sellStock?.current_price.toFixed(2)}</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div>
+                <Label>Shares Owned: {sellStock?.shares}</Label>
+              </div>
+              <div>
+                <Label htmlFor="sellShares">Number of shares to sell</Label>
+                <Input
+                  id="sellShares"
+                  type="number"
+                  value={sellShares}
+                  onChange={(e) => setSellShares(e.target.value)}
+                  placeholder="Enter number of shares"
+                  max={sellStock?.shares || 0}
+                />
+              </div>
+              {sellShares && sellStock && (
+                <div className="text-sm text-gray-600">
+                  Total revenue: ${(Number.parseInt(sellShares) * sellStock.current_price).toLocaleString()}
+                </div>
+              )}
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setSellStock(null)}>
+                  Cancel
+                </Button>
+                <Button onClick={handleSellStock}>{isMarketOpen ? "Sell Now" : "Queue Order"}</Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
 
         {/* Profile Edit Dialog */}
         <Dialog open={isProfileDialogOpen} onOpenChange={setIsProfileDialogOpen}>
