@@ -111,29 +111,34 @@ CREATE OR REPLACE FUNCTION record_all_portfolio_snapshots()
 RETURNS void AS $$
 DECLARE
   user_record RECORD;
+  v_user_count INTEGER;
 BEGIN
   -- Loop through all users and record their snapshots
-  FOR user_record IN 
+  FOR user_record IN
     SELECT id FROM profiles
   LOOP
     PERFORM record_portfolio_snapshot(user_record.id);
   END LOOP;
   
-  -- Log the action
-  INSERT INTO admin_activity_log (
-    admin_id,
-    action,
-    details,
-    created_at
-  ) VALUES (
-    COALESCE(auth.uid(), '00000000-0000-0000-0000-000000000000'),
-    'RECORD_ALL_SNAPSHOTS',
-    json_build_object(
-      'timestamp', NOW(),
-      'user_count', (SELECT COUNT(*) FROM profiles)
-    ),
-    NOW()
-  );
+  -- Log the action (only if there's an authenticated user)
+  IF auth.uid() IS NOT NULL THEN
+    SELECT COUNT(*) INTO v_user_count FROM profiles;
+    
+    INSERT INTO admin_activity_log (
+      admin_id,
+      action,
+      details,
+      created_at
+    ) VALUES (
+      auth.uid(),
+      'RECORD_ALL_SNAPSHOTS',
+      json_build_object(
+        'timestamp', NOW(),
+        'user_count', v_user_count
+      ),
+      NOW()
+    );
+  END IF;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
