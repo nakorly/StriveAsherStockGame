@@ -64,7 +64,19 @@ export function QueuedOrders({ orders, onCancelOrder, marketStatus }: QueuedOrde
   }
 
   if (pendingOrders.length === 0 && recentExecutedOrders.length === 0) {
-    return null
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Queued Orders</CardTitle>
+          <CardDescription>No pending or recently executed orders.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="text-sm text-gray-500">
+            When the market is closed, new orders will appear here until they execute.
+          </div>
+        </CardContent>
+      </Card>
+    )
   }
 
   return (

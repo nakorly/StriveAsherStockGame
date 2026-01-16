@@ -609,6 +609,71 @@ export default function Dashboard() {
     processQueuedOrders()
   }, [isMarketOpen, queuedOrders, user])
 
+  useEffect(() => {
+    let isMounted = true
+    let channel: any
+    let intervalId: ReturnType<typeof setInterval> | null = null
+
+    const setupMarketStatusSync = async () => {
+      try {
+        const { getSupabase, isSupabaseConfigured } = await import("@/lib/supabase")
+
+        if (!isSupabaseConfigured()) {
+          return
+        }
+
+        const supabase = await getSupabase()
+        if (!supabase || !supabase.from || typeof supabase.from !== "function") {
+          return
+        }
+
+        const refreshStatus = async () => {
+          if (!isMounted) return
+          await updateMarketStatus(supabase)
+        }
+
+        await refreshStatus()
+
+        if (supabase.channel && typeof supabase.channel === "function") {
+          channel = supabase
+            .channel("market_settings_changes")
+            .on(
+              "postgres_changes",
+              { event: "*", schema: "public", table: "market_settings" },
+              () => {
+                refreshStatus()
+              }
+            )
+            .subscribe()
+        }
+
+        intervalId = setInterval(refreshStatus, 60000)
+      } catch (err) {
+        console.error("Error setting up market status sync:", err)
+      }
+    }
+
+    setupMarketStatusSync()
+
+    return () => {
+      isMounted = false
+      if (intervalId) {
+        clearInterval(intervalId)
+      }
+
+      if (channel) {
+        import("@/lib/supabase")
+          .then(({ getSupabase }) => getSupabase())
+          .then((supabase) => {
+            if (supabase?.removeChannel) {
+              supabase.removeChannel(channel)
+            }
+          })
+          .catch(() => {})
+      }
+    }
+  }, [user?.id])
+
   // Auto-refresh prices on initial load
   useEffect(() => {
     if (user && portfolio.length > 0) {
