@@ -130,13 +130,16 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
       }
 
       // Get all users with their profiles and portfolio values
-      const { data: profiles, error: profilesError } = await supabase.from("profiles").select(`
+      const { data: profiles, error: profilesError } = await supabase
+        .from("profiles")
+        .select(`
           id,
           balance,
           username,
           display_name,
           created_at
         `)
+        .order("created_at", { ascending: false })
 
       if (profilesError) throw profilesError
 
@@ -178,6 +181,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
           }
         }) || []
 
+      usersData.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
       setUsers(usersData)
     } catch (err) {
       console.error("Error loading users:", err)
@@ -444,14 +448,41 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
     try {
       const { getSupabase } = await import("@/lib/supabase")
       const supabase = await getSupabase()
-      const { error } = await supabase.from("artificial_stock_prices").insert({
-        symbol: newStockSymbol.toUpperCase(),
-        name: newStockName,
-        artificial_price: parseFloat(newStockPrice),
-        is_active: true,
-        created_by: user.id,
-        updated_by: user.id,
-      })
+      const normalizedSymbol = newStockSymbol.toUpperCase()
+      const price = parseFloat(newStockPrice)
+
+      const { data: existing, error: lookupError } = await supabase
+        .from("artificial_stock_prices")
+        .select("id")
+        .eq("symbol", normalizedSymbol)
+        .limit(1)
+
+      if (lookupError) throw lookupError
+
+      let error: any = null
+      if (existing && existing.length > 0) {
+        const { error: updateError } = await supabase
+          .from("artificial_stock_prices")
+          .update({
+            name: newStockName,
+            artificial_price: price,
+            is_active: true,
+            updated_at: new Date().toISOString(),
+            updated_by: user.id,
+          })
+          .eq("id", existing[0].id)
+        error = updateError
+      } else {
+        const { error: insertError } = await supabase.from("artificial_stock_prices").insert({
+          symbol: normalizedSymbol,
+          name: newStockName,
+          artificial_price: price,
+          is_active: true,
+          created_by: user.id,
+          updated_by: user.id,
+        })
+        error = insertError
+      }
 
       if (error) throw error
 
@@ -460,9 +491,9 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
         admin_id: user.id,
         action: "ADD_ARTIFICIAL_STOCK",
         details: {
-          symbol: newStockSymbol.toUpperCase(),
+          symbol: normalizedSymbol,
           name: newStockName,
-          price: parseFloat(newStockPrice),
+          price,
         },
       })
 

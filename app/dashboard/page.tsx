@@ -838,10 +838,15 @@ export default function Dashboard() {
   }
 
   const handleSellStock = async () => {
-    if (!sellStock || !sellShares || !user) return
+    if (!sellStock || !sellShares) return
 
-    const shares = Number.parseInt(sellShares)
-    const sellPrice = sellStock.current_price
+    const shares = Number.parseInt(sellShares, 10)
+    if (!Number.isFinite(shares) || shares <= 0) {
+      alert("Enter a valid number of shares to sell")
+      return
+    }
+
+    const sellPrice = Number(sellStock.current_price)
     const totalRevenue = sellPrice * shares
 
     if (shares > sellStock.shares) {
@@ -857,22 +862,29 @@ export default function Dashboard() {
         const newBalance = balance + totalRevenue
         setBalance(newBalance)
 
-        const updatedPortfolio = portfolio.map((p) => {
-          if (p.symbol === sellStock.symbol) {
-            const remainingShares = p.shares - shares
-            if (remainingShares <= 0) return null
-            return {
-              ...p,
-              shares: remainingShares,
-              total_value: remainingShares * p.current_price,
+        const updatedPortfolio = portfolio
+          .map((p) => {
+            if (p.symbol === sellStock.symbol) {
+              const remainingShares = p.shares - shares
+              if (remainingShares <= 0) return null
+              return {
+                ...p,
+                shares: remainingShares,
+                total_value: remainingShares * Number(p.current_price),
+              }
             }
-          }
-          return p
-        }).filter(Boolean) as Portfolio[]
+            return p
+          })
+          .filter(Boolean) as Portfolio[]
 
         setPortfolio(updatedPortfolio)
         setSellStock(null)
         setSellShares("")
+        return
+      }
+
+      if (!user) {
+        alert("Session expired. Please sign in again.")
         return
       }
 
@@ -888,10 +900,13 @@ export default function Dashboard() {
         const remainingShares = sellStock.shares - shares
 
         if (remainingShares > 0) {
-          await supabase.from("portfolios").update({
-            shares: remainingShares,
-            total_value: remainingShares * sellPrice,
-          }).eq("id", sellStock.id)
+          await supabase
+            .from("portfolios")
+            .update({
+              shares: remainingShares,
+              total_value: remainingShares * sellPrice,
+            })
+            .eq("id", sellStock.id)
         } else {
           await supabase.from("portfolios").delete().eq("id", sellStock.id)
         }
