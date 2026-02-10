@@ -52,6 +52,37 @@ export default function LoginPage() {
   // Admin credentials (hidden from UI)
   const ADMIN_EMAIL = "greencheez@proton.me"
 
+  const redirectAfterAuth = async (supabase: any, session: any, adminMode: boolean) => {
+    if (!session || !session.user) return
+
+    if (!adminMode) {
+      router.push("/dashboard")
+      return
+    }
+
+    if (session.user?.email === ADMIN_EMAIL) {
+      window.location.href = "/admin"
+      return
+    }
+
+    try {
+      const { data: adminRole } = await supabase
+        .from("admin_roles")
+        .select("role")
+        .eq("user_id", session.user?.id)
+        .single()
+
+      if (adminRole) {
+        window.location.href = "/admin"
+      } else {
+        setError("This account does not have admin privileges. Please contact the system administrator.")
+      }
+    } catch (adminCheckError) {
+      console.warn("Could not check admin role:", adminCheckError)
+      setError("Could not verify admin privileges. Please try again.")
+    }
+  }
+
   // Password strength indicators
   const [passwordStrength, setPasswordStrength] = useState({
     score: 0,
@@ -111,35 +142,8 @@ export default function LoginPage() {
               } = await supabase.auth.getSession()
 
               if (session) {
-                // If default admin email, go straight to admin
-                if (session.user?.email === ADMIN_EMAIL) {
-                  window.location.href = "/admin"
-                  return
-                }
-                // Check if user is admin via roles table
-                try {
-                  const { data: adminRole } = await supabase
-                    .from("admin_roles")
-                    .select("role")
-                    .eq("user_id", session.user?.id)
-                    .single()
-
-                  if (adminRole) {
-                    window.location.href = "/admin"
-                  } else {
-                    router.push("/dashboard")
-                  }
-                  return
-                } catch (adminCheckError) {
-                  console.warn("Could not check admin role:", adminCheckError)
-                  // If we cannot verify, prefer admin for default admin email
-                  if (session.user?.email === ADMIN_EMAIL) {
-                    window.location.href = "/admin"
-                  } else {
-                    router.push("/dashboard")
-                  }
-                  return
-                }
+                await redirectAfterAuth(supabase, session, isAdminMode)
+                return
               }
 
               // Listen for auth changes
@@ -149,35 +153,7 @@ export default function LoginPage() {
                 if (event === "SIGNED_OUT" || !session) {
                   // Stay on login page
                 } else if (session) {
-                  // If default admin email, go straight to admin
-                  if (session.user?.email === ADMIN_EMAIL) {
-                    window.location.href = "/admin"
-                    return
-                  }
-                  // Check if user is admin
-                  try {
-                    const { data: adminRole } = await supabase
-                      .from("admin_roles")
-                      .select("role")
-                      .eq("user_id", session.user?.id)
-                      .single()
-
-                    console.log("Session admin check:", { adminRole })
-
-                    if (adminRole) {
-                      window.location.href = "/admin"
-                    } else {
-                      router.push("/dashboard")
-                    }
-                  } catch (adminCheckError) {
-                    console.warn("Could not check admin role:", adminCheckError)
-                    // If we cannot verify, prefer admin for default admin email
-                    if (session.user?.email === ADMIN_EMAIL) {
-                      window.location.href = "/admin"
-                    } else {
-                      router.push("/dashboard")
-                    }
-                  }
+                  await redirectAfterAuth(supabase, session, isAdminMode)
                 }
               })
 
@@ -194,7 +170,7 @@ export default function LoginPage() {
     }
 
     initializeAuth()
-  }, [router])
+  }, [router, isAdminMode])
 
   // Clear fields when switching modes
   useEffect(() => {
@@ -409,39 +385,12 @@ export default function LoginPage() {
             }
           }
 
-          // Always check admin role after login
-          try {
-            const { data: adminRole, error: adminRoleError } = await supabase
-              .from("admin_roles")
-              .select("role")
-              .eq("user_id", data.user?.id)
-              .single()
-
-            console.log("Admin role check result:", { adminRole, adminRoleError })
-
-            if (adminRole) {
-              console.log("Admin role found, redirecting to admin dashboard")
-              // Force redirect to admin dashboard immediately
-              window.location.href = "/admin"
-              return
-            } else if (isAdminMode) {
-              setError("This account does not have admin privileges. Please contact the system administrator.")
-              setLoading(false)
-              return
-            } else {
-              console.log("No admin role, redirecting to user dashboard")
-              router.push("/dashboard")
-            }
-          } catch (roleCheckError) {
-            console.warn("Could not check admin role:", roleCheckError)
-            if (isAdminMode) {
-              setError("Could not verify admin privileges. Please try again.")
-              setLoading(false)
-              return
-            } else {
-              router.push("/dashboard")
-            }
+          if (!isAdminMode) {
+            router.push("/dashboard")
+            return
           }
+
+          await redirectAfterAuth(supabase, { user: data.user }, true)
         }
       } else {
         // Check if registration is allowed before proceeding

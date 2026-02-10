@@ -36,7 +36,7 @@ export function PublicLeaderboard() {
   const loadLeaderboard = async () => {
     setLoading(true)
     try {
-      const { getSupabase, isSupabaseConfigured } = await import("@/lib/supabase")
+      const { isSupabaseConfigured } = await import("@/lib/supabase")
 
       if (!isSupabaseConfigured()) {
         console.log("Supabase not configured, using demo data")
@@ -45,27 +45,14 @@ export function PublicLeaderboard() {
         return
       }
 
-      const supabase = await getSupabase()
+      const response = await fetch("/api/leaderboard-monthly?days=30&limit=10")
+      const payload = await response.json()
 
-      if (!supabase || !supabase.from || typeof supabase.from !== "function") {
-        console.log("Invalid Supabase client, using demo data")
-        loadDemoData()
-        setLoading(false)
-        return
+      if (!payload.success) {
+        throw new Error(payload.error || "Failed to load leaderboard")
       }
 
-      // Update leaderboard first
-      await supabase.rpc("update_leaderboard_with_usernames")
-
-      const { data, error } = await supabase
-        .from("leaderboard")
-        .select("*")
-        .order("total_gain_loss_percent", { ascending: false })
-        .limit(10)
-
-      if (error) throw error
-
-      setLeaderboard(data || [])
+      setLeaderboard(payload.leaderboard || [])
     } catch (err) {
       console.error("Error loading leaderboard:", err)
       loadDemoData()
@@ -176,7 +163,7 @@ export function PublicLeaderboard() {
           <Trophy className="h-5 w-5" />
           Leaderboard
         </CardTitle>
-        <CardDescription>Ranked by month-to-date return %</CardDescription>
+        <CardDescription>Ranked by last 30 days return %</CardDescription>
       </CardHeader>
       <CardContent>
         {leaderboard.length === 0 ? (
@@ -190,7 +177,7 @@ export function PublicLeaderboard() {
               <TableRow>
                 <TableHead>Rank</TableHead>
                 <TableHead>Trader</TableHead>
-                <TableHead>Return % (MTD)</TableHead>
+                <TableHead>Return % (30d)</TableHead>
                 <TableHead>Actions</TableHead>
               </TableRow>
             </TableHeader>
