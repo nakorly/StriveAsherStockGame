@@ -962,9 +962,9 @@ export default function Dashboard() {
   }
 
   const totalPortfolioValue = portfolio.reduce((sum, item) => sum + item.total_value, 0)
-  const totalGainLoss = portfolio.reduce((sum, item) => sum + item.gain_loss, 0)
-  const totalGainLossPercent =
-    totalPortfolioValue > 0 ? (totalGainLoss / (totalPortfolioValue - totalGainLoss)) * 100 : 0
+  const totalAccountValue = balance + totalPortfolioValue
+  const totalGainLoss = totalAccountValue - startingBalance
+  const totalGainLossPercent = startingBalance > 0 ? (totalGainLoss / startingBalance) * 100 : 0
 
   if (loading) {
     return (
@@ -1049,7 +1049,7 @@ export default function Dashboard() {
               <Activity className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">${(balance + totalPortfolioValue).toLocaleString()}</div>
+              <div className="text-2xl font-bold">${totalAccountValue.toLocaleString()}</div>
             </CardContent>
           </Card>
         </div>

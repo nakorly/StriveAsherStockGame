@@ -81,7 +81,11 @@ export function PortfolioValueChart({ userId, days = 30 }: PortfolioValueChartPr
   // Calculate chart dimensions and scaling
   const maxValue = Math.max(...history.map((point) => point.total_value))
   const minValue = Math.min(...history.map((point) => point.total_value))
-  const valueRange = maxValue - minValue || 1
+  const isFlatRange = maxValue === minValue
+  const flatPadding = Math.max(maxValue * 0.005, 1)
+  const displayMax = isFlatRange ? maxValue + flatPadding : maxValue
+  const displayMin = isFlatRange ? minValue - flatPadding : minValue
+  const valueRange = Math.max(displayMax - displayMin, 1)
   const padding = valueRange * 0.1 // 10% padding
 
   const chartHeight = 200
@@ -92,7 +96,7 @@ export function PortfolioValueChart({ userId, days = 30 }: PortfolioValueChartPr
   const linePath = history
     .map((point, index) => {
       const x = index * pointSpacing
-      const y = chartHeight - ((point.total_value - minValue + padding) / (valueRange + 2 * padding)) * chartHeight
+      const y = chartHeight - ((point.total_value - displayMin + padding) / (valueRange + 2 * padding)) * chartHeight
       return `${index === 0 ? "M" : "L"} ${x} ${y}`
     })
     .join(" ")
@@ -108,6 +112,9 @@ export function PortfolioValueChart({ userId, days = 30 }: PortfolioValueChartPr
     return date.toLocaleDateString("en-US", { month: "short", day: "numeric" })
   }
 
+  const formatCurrency = (value: number) =>
+    value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
   // Calculate overall change
   const firstValue = history[0]?.total_value || 0
   const lastValue = history[history.length - 1]?.total_value || 0
@@ -122,7 +129,7 @@ export function PortfolioValueChart({ userId, days = 30 }: PortfolioValueChartPr
           <div className="flex items-center gap-4 mt-2">
             <div>
               <span className="text-xs text-gray-500">Current Value: </span>
-              <span className="text-sm font-semibold">${lastValue.toLocaleString()}</span>
+              <span className="text-sm font-semibold">${formatCurrency(lastValue)}</span>
             </div>
             <div>
               <span className="text-xs text-gray-500">{days}-Day Change: </span>
@@ -181,7 +188,7 @@ export function PortfolioValueChart({ userId, days = 30 }: PortfolioValueChartPr
             {/* Data points */}
             {history.map((point, index) => {
               const x = index * pointSpacing
-              const y = chartHeight - ((point.total_value - minValue + padding) / (valueRange + 2 * padding)) * chartHeight
+              const y = chartHeight - ((point.total_value - displayMin + padding) / (valueRange + 2 * padding)) * chartHeight
               return (
                 <circle
                   key={index}
@@ -192,7 +199,7 @@ export function PortfolioValueChart({ userId, days = 30 }: PortfolioValueChartPr
                   className="hover:r-5 transition-all cursor-pointer"
                 >
                   <title>
-                    {formatDate(point.snapshot_date)}: ${point.total_value.toLocaleString()}
+                    {formatDate(point.snapshot_date)}: ${formatCurrency(point.total_value)}
                   </title>
                 </circle>
               )
@@ -218,9 +225,9 @@ export function PortfolioValueChart({ userId, days = 30 }: PortfolioValueChartPr
 
           {/* Y-axis labels */}
           <div className="absolute left-0 top-0 flex flex-col justify-between text-xs text-gray-500" style={{ height: chartHeight }}>
-            <span>${(maxValue + padding).toLocaleString()}</span>
-            <span>${((maxValue + minValue) / 2).toLocaleString()}</span>
-            <span>${(minValue - padding).toLocaleString()}</span>
+            <span>${formatCurrency(displayMax + padding)}</span>
+            <span>${formatCurrency((displayMax + displayMin) / 2)}</span>
+            <span>${formatCurrency(displayMin - padding)}</span>
           </div>
         </div>
       </CardContent>

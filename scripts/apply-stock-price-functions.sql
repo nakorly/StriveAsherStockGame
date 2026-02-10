@@ -149,6 +149,7 @@ RETURNS void
 LANGUAGE plpgsql
 AS $$
 DECLARE
+    settings_record RECORD;
     order_record RECORD;
     current_price NUMERIC;
     total_cost NUMERIC;
@@ -156,7 +157,36 @@ DECLARE
     existing_stock RECORD;
     new_shares INTEGER;
     avg_purchase_price NUMERIC;
+    v_current_time TIME;
+    current_day INTEGER;
+    is_trading_day BOOLEAN;
+    market_open BOOLEAN;
 BEGIN
+    -- Respect market hours before processing
+    SELECT * INTO settings_record
+    FROM market_settings
+    LIMIT 1;
+
+    IF FOUND THEN
+        v_current_time := (NOW() AT TIME ZONE settings_record.timezone)::time;
+        current_day := EXTRACT(DOW FROM (NOW() AT TIME ZONE settings_record.timezone));
+
+        SELECT EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements_text(settings_record.trading_days) AS d(day)
+            WHERE d.day::int = current_day
+        ) INTO is_trading_day;
+
+        market_open := CASE
+            WHEN settings_record.is_market_open_override IS NOT NULL THEN settings_record.is_market_open_override
+            ELSE is_trading_day AND v_current_time >= settings_record.market_open_time AND v_current_time <= settings_record.market_close_time
+        END;
+
+        IF NOT market_open THEN
+            RETURN;
+        END IF;
+    END IF;
+
     -- Process all pending orders
     FOR order_record IN 
         SELECT * FROM queued_orders 
