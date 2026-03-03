@@ -90,6 +90,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
   const [newStockSymbol, setNewStockSymbol] = useState("")
   const [newStockName, setNewStockName] = useState("")
   const [newStockPrice, setNewStockPrice] = useState("")
+  const [refreshingStockPrices, setRefreshingStockPrices] = useState(false)
   // Leaderboard details state
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [detailsLoading, setDetailsLoading] = useState(false)
@@ -201,6 +202,22 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
       setArtificialStocks(data || [])
     } catch (err) {
       console.error("Error loading artificial stocks:", err)
+    }
+  }
+
+  const refreshAllStockPrices = async () => {
+    setRefreshingStockPrices(true)
+    try {
+      const { getSupabase } = await import("@/lib/supabase")
+      const supabase = await getSupabase()
+      await supabase.rpc("update_all_stock_prices")
+      await loadArtificialStocks()
+      setError("")
+    } catch (err) {
+      setError("Failed to refresh stock prices")
+      console.error("Refresh stock prices error:", err)
+    } finally {
+      setRefreshingStockPrices(false)
     }
   }
 
@@ -1141,10 +1158,21 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                     </CardTitle>
                     <CardDescription>Override real stock prices with artificial ones for simulation</CardDescription>
                   </div>
-                  <Button onClick={() => setIsStockPriceDialogOpen(true)} className="flex items-center gap-2">
-                    <Plus className="h-4 w-4" />
-                    Add Stock Price
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={refreshAllStockPrices}
+                      disabled={refreshingStockPrices}
+                      className="flex items-center gap-2 bg-transparent"
+                    >
+                      <RefreshCw className={`h-4 w-4 ${refreshingStockPrices ? "animate-spin" : ""}`} />
+                      {refreshingStockPrices ? "Refreshing..." : "Refresh Prices"}
+                    </Button>
+                    <Button onClick={() => setIsStockPriceDialogOpen(true)} className="flex items-center gap-2">
+                      <Plus className="h-4 w-4" />
+                      Add Stock Price
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent>
