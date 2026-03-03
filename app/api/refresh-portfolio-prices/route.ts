@@ -79,7 +79,7 @@ export async function POST(request: NextRequest) {
 
             const variation = (Math.random() - 0.5) * 0.02 // -1% to +1%
             currentPrice = basePrice * (1 + variation)
-            currentPrice = Math.max(1, Math.round(currentPrice * 100) / 100)
+            currentPrice = Math.max(1, Math.round(currentPrice * 10) / 10)
             console.log(`Generated price for ${item.symbol}: $${currentPrice}`)
           } else {
             const globalQuote = data["Global Quote"]

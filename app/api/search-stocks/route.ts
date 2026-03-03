@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
     if (data["Error Message"]) {
       // API throttled; fall back to a minimal demo response
       const sym = String(query).toUpperCase()
-      const price = Number((50 + Math.random() * 250).toFixed(2))
+      const price = Number((Math.round((50 + Math.random() * 250) * 10) / 10).toFixed(1))
       const pct = Number(((Math.random() - 0.5) * 4).toFixed(2))
       const change = Number((price * (pct / 100)).toFixed(2))
       return NextResponse.json({ success: true, stocks: [{ symbol: sym, name: sym, price, change, change_percent: pct }] })
@@ -109,7 +109,7 @@ export async function GET(request: NextRequest) {
         stocks.push({ symbol: t.symbol, name: t.name, ...filled })
       } else {
         // Final fallback to a sensible placeholder instead of zero
-        const price = Number((50 + Math.random() * 250).toFixed(2))
+        const price = Number((Math.round((50 + Math.random() * 250) * 10) / 10).toFixed(1))
         const pct = Number(((Math.random() - 0.5) * 4).toFixed(2))
         const change = Number((price * (pct / 100)).toFixed(2))
         stocks.push({ symbol: t.symbol, name: t.name, price, change, change_percent: pct })
@@ -139,14 +139,14 @@ export async function GET(request: NextRequest) {
           if (filled) {
             stocks.push({ symbol: sym, name: sym, ...filled })
           } else {
-            const price = Number((50 + Math.random() * 250).toFixed(2))
+          const price = Number((Math.round((50 + Math.random() * 250) * 10) / 10).toFixed(1))
             const pct = Number(((Math.random() - 0.5) * 4).toFixed(2))
             const change = Number((price * (pct / 100)).toFixed(2))
             stocks.push({ symbol: sym, name: sym, price, change, change_percent: pct })
           }
         }
       } catch (_) {
-        const price = Number((50 + Math.random() * 250).toFixed(2))
+        const price = Number((Math.round((50 + Math.random() * 250) * 10) / 10).toFixed(1))
         const pct = Number(((Math.random() - 0.5) * 4).toFixed(2))
         const change = Number((price * (pct / 100)).toFixed(2))
         stocks.push({ symbol: sym, name: sym, price, change, change_percent: pct })
@@ -186,7 +186,7 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ success: true, stocks: [{ symbol: sym, name: sym, ...filled }] })
       }
     } catch (_) {}
-    const price = Number((50 + Math.random() * 250).toFixed(2))
+    const price = Number((Math.round((50 + Math.random() * 250) * 10) / 10).toFixed(1))
     const pct = Number(((Math.random() - 0.5) * 4).toFixed(2))
     const change = Number((price * (pct / 100)).toFixed(2))
     return NextResponse.json({ success: true, stocks: [{ symbol: sym, name: sym, price, change, change_percent: pct }] })
