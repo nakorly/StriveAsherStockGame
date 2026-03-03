@@ -93,6 +93,8 @@ export default function Dashboard() {
   const [username, setUsername] = useState("")
   const [displayName, setDisplayName] = useState("")
   const processingQueuedOrders = useRef(false)
+  const refreshInFlight = useRef(false)
+  const prevMarketOpenRef = useRef<boolean | null>(null)
   const router = useRouter()
 
   useEffect(() => {
@@ -547,6 +549,11 @@ export default function Dashboard() {
           nextEvent,
           timeUntil: nextEventTime || "time unavailable",
         })
+
+        if (prevMarketOpenRef.current !== null && prevMarketOpenRef.current !== marketOpen) {
+          await refreshPortfolioPrices()
+        }
+        prevMarketOpenRef.current = marketOpen
       }
     } catch (err) {
       console.error("Error in updateMarketStatus:", err)
@@ -576,8 +583,9 @@ export default function Dashboard() {
   }
 
   const refreshPortfolioPrices = async () => {
-    if (!user) return
+    if (!user || refreshInFlight.current) return
 
+    refreshInFlight.current = true
     setRefreshingPrices(true)
     try {
       const response = await fetch("/api/refresh-portfolio-prices", {
@@ -601,6 +609,7 @@ export default function Dashboard() {
     } catch (error) {
       console.error("Error refreshing prices:", error)
     } finally {
+      refreshInFlight.current = false
       setRefreshingPrices(false)
     }
   }
@@ -680,6 +689,18 @@ export default function Dashboard() {
       refreshPortfolioPrices()
     }
   }, [user?.id])
+
+  useEffect(() => {
+    if (!user || !isMarketOpen) {
+      return
+    }
+
+    const intervalId = setInterval(() => {
+      refreshPortfolioPrices()
+    }, 60 * 60 * 1000)
+
+    return () => clearInterval(intervalId)
+  }, [user?.id, isMarketOpen])
 
   const cancelQueuedOrder = async (orderId: string) => {
     if (!user) return
@@ -1171,12 +1192,12 @@ export default function Dashboard() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Symbol</TableHead>
-                        <TableHead>Name</TableHead>
-                        <TableHead>Price</TableHead>
-                        <TableHead>Change</TableHead>
-                        <TableHead>Actions</TableHead>
-                      </TableRow>
+                      <TableHead>Symbol</TableHead>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Price</TableHead>
+                      <TableHead>Day Change</TableHead>
+                      <TableHead>Actions</TableHead>
+                    </TableRow>
                     </TableHeader>
                     <TableBody>
                       {searchResults.map((stock) => (

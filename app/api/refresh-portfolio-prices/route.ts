@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
     // Get user's portfolio
     const { data: portfolioItems, error: portfolioError } = await supabase
       .from("portfolios")
-      .select("id, symbol, shares, purchase_price")
+      .select("id, symbol, shares, purchase_price, price")
       .eq("user_id", userId)
 
     if (portfolioError) {
@@ -47,11 +47,13 @@ export async function POST(request: NextRequest) {
 
         let currentPrice: number
         let stockName: string = item.symbol
+        let priceSource: "artificial" | "alpha_vantage" | "cache_fallback" | "generated" = "generated"
 
         if (artificialPrice) {
           // Use artificial price
           currentPrice = Number(artificialPrice.artificial_price)
           stockName = artificialPrice.name
+          priceSource = "artificial"
         } else {
           // Fetch from Alpha Vantage API
           const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${item.symbol}&apikey=${API_KEY}`
@@ -59,14 +61,30 @@ export async function POST(request: NextRequest) {
           const data = await response.json()
 
           if (data["Error Message"] || !data["Global Quote"]) {
-            // If API fails, generate a realistic price change based on the stored price
-            const variation = (Math.random() - 0.48) * 0.03 // -1.8% to +1.32%
-            currentPrice = Number(item.purchase_price) * (1 + variation)
+            // If API fails, fall back to last cached price or portfolio price, then apply a small drift
+            let basePrice = Number(item.price ?? item.purchase_price)
+            try {
+              const { data: cached } = await supabase
+                .from("latest_stock_prices")
+                .select("price, name")
+                .eq("symbol", item.symbol)
+                .limit(1)
+                .single()
+              if (cached?.price) {
+                basePrice = Number(cached.price)
+                if (cached.name) stockName = cached.name
+                priceSource = "cache_fallback"
+              }
+            } catch (_) {}
+
+            const variation = (Math.random() - 0.5) * 0.02 // -1% to +1%
+            currentPrice = basePrice * (1 + variation)
             currentPrice = Math.max(1, Math.round(currentPrice * 100) / 100)
             console.log(`Generated price for ${item.symbol}: $${currentPrice}`)
           } else {
             const globalQuote = data["Global Quote"]
-            currentPrice = Number.parseFloat(globalQuote["05. price"]) || Number(item.purchase_price)
+            currentPrice = Number.parseFloat(globalQuote["05. price"]) || Number(item.price ?? item.purchase_price)
+            priceSource = "alpha_vantage"
           }
         }
 
@@ -93,6 +111,21 @@ export async function POST(request: NextRequest) {
           errors.push(`${item.symbol}: ${updateError.message}`)
         } else {
           updatedCount++
+        }
+
+        // Best-effort: update latest_stock_prices cache for related searches
+        try {
+          await supabase.rpc("upsert_latest_stock_price", {
+            p_symbol: item.symbol,
+            p_name: stockName,
+            p_price: currentPrice,
+            p_change: Math.round(change * 100) / 100,
+            p_change_percent: Math.round(changePercent * 100) / 100,
+            p_is_artificial: priceSource === "artificial",
+            p_source: priceSource,
+          })
+        } catch (cacheErr) {
+          console.warn("Could not update latest_stock_prices:", cacheErr)
         }
 
         // Add small delay to avoid API rate limits
