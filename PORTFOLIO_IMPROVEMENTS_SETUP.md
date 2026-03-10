@@ -112,7 +112,7 @@ curl -X POST https://your-app.com/api/admin/update-prices \
 2. `/api/refresh-portfolio-prices` is called with user ID
 3. For each stock in portfolio:
    - Checks for artificial prices first
-   - Falls back to Alpha Vantage API
+   - Falls back to Finnhub API
    - Generates realistic variation if API fails
    - Updates portfolio table with new prices
 4. Records portfolio snapshot for historical tracking

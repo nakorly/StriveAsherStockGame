@@ -10,27 +10,30 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // Alpha Vantage API key would be stored in environment variables
-    const API_KEY = process.env.ALPHA_VANTAGE_API_KEY || "demo"
-    const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${API_KEY}`
+    // Finnhub API key should be stored in environment variables
+    const API_KEY = process.env.FINNHUB_API_KEY
+    if (!API_KEY) {
+      return NextResponse.json({ error: "FINNHUB_API_KEY is not set" }, { status: 500 })
+    }
+    const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${API_KEY}`
 
     const response = await fetch(url)
     const data = await response.json()
 
-    if (data["Error Message"]) {
+    if (data?.error) {
       return NextResponse.json({ error: "Stock not found or API limit reached" }, { status: 404 })
     }
 
-    const globalQuote = data["Global Quote"]
-    if (!globalQuote) {
+    const currentPrice = Number(data?.c)
+    if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
       return NextResponse.json({ error: "No quote data available" }, { status: 404 })
     }
 
     // Transform the data to match our interface
-    const symbol = String(globalQuote["01. symbol"]).toUpperCase()
-    const price = Number.parseFloat(globalQuote["05. price"]) || 0
-    const change = Number.parseFloat(globalQuote["09. change"]) || 0
-    const changePercent = Number.parseFloat(String(globalQuote["10. change percent"]).replace("%", "")) || 0
+    const symbol = String(searchParams.get("symbol") || "").toUpperCase()
+    const price = currentPrice
+    const change = Number(data?.d) || 0
+    const changePercent = Number(data?.dp) || 0
 
     const quote = { symbol, price, change, changePercent }
 
@@ -44,7 +47,7 @@ export async function GET(request: NextRequest) {
         p_change: change,
         p_change_percent: changePercent,
         p_is_artificial: false,
-        p_source: "alpha_vantage",
+        p_source: "finnhub",
       })
     } catch (cacheErr) {
       console.warn("Could not upsert latest_stock_prices:", cacheErr)

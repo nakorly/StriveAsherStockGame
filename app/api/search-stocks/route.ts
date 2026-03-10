@@ -11,17 +11,18 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // Alpha Vantage API key would be stored in environment variables
-    const API_KEY = process.env.ALPHA_VANTAGE_API_KEY || "demo"
-    const url = `https://www.alphavantage.co/query?function=SYMBOL_SEARCH&keywords=${encodeURIComponent(
-      query,
-    )}&apikey=${API_KEY}`
+    // Finnhub API key should be stored in environment variables
+    const API_KEY = process.env.FINNHUB_API_KEY
+    if (!API_KEY) {
+      return NextResponse.json({ success: false, error: "FINNHUB_API_KEY is not set" }, { status: 500 })
+    }
+    const url = `https://finnhub.io/api/v1/search?q=${encodeURIComponent(query)}&token=${API_KEY}`
 
     const response = await fetch(url)
     const data = await response.json()
 
-    if (data["Error Message"]) {
-      // API throttled; fall back to a minimal demo response
+    if (!response.ok || data?.error) {
+      // API throttled or failed; fall back to a minimal demo response
       const sym = String(query).toUpperCase()
       const price = Number((Math.round((50 + Math.random() * 250) * 10) / 10).toFixed(1))
       const pct = Number(((Math.random() - 0.5) * 4).toFixed(2))
@@ -30,10 +31,10 @@ export async function GET(request: NextRequest) {
     }
 
     // Transform results and try to enrich with cached prices
-    const matches = Array.isArray(data.bestMatches) ? data.bestMatches : []
+    const matches = Array.isArray(data.result) ? data.result : []
     const top = matches.slice(0, 10).map((m: any) => ({
-      symbol: String(m["1. symbol"]).toUpperCase(),
-      name: String(m["2. name"]) || String(m["1. symbol"]).toUpperCase(),
+      symbol: String(m.displaySymbol || m.symbol).toUpperCase(),
+      name: String(m.description || m.displaySymbol || m.symbol).toUpperCase(),
     }))
 
     let cached: Record<string, any> = {}
@@ -58,16 +59,17 @@ export async function GET(request: NextRequest) {
     // Helper: fetch fresh quote for a symbol and upsert cache
     async function fetchAndCacheQuote(sym: string) {
       try {
-        const API_KEY = process.env.ALPHA_VANTAGE_API_KEY || "demo"
-        const qUrl = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${sym}&apikey=${API_KEY}`
+        const API_KEY = process.env.FINNHUB_API_KEY
+        if (!API_KEY) return null
+        const qUrl = `https://finnhub.io/api/v1/quote?symbol=${sym}&token=${API_KEY}`
         const resp = await fetch(qUrl)
         const qData = await resp.json()
-        const gq = qData?.["Global Quote"]
-        if (!gq) return null
-        const symbol = String(gq["01. symbol"]).toUpperCase()
-        const price = Number.parseFloat(gq["05. price"]) || 0
-        const change = Number.parseFloat(gq["09. change"]) || 0
-        const changePercent = Number.parseFloat(String(gq["10. change percent"]).replace("%", "")) || 0
+        if (!resp.ok || qData?.error) return null
+        const price = Number(qData?.c)
+        if (!Number.isFinite(price) || price <= 0) return null
+        const symbol = String(sym).toUpperCase()
+        const change = Number(qData?.d) || 0
+        const changePercent = Number(qData?.dp) || 0
         const supabase = getAdminSupabase()
         await supabase.rpc("upsert_latest_stock_price", {
           p_symbol: symbol,
@@ -76,7 +78,7 @@ export async function GET(request: NextRequest) {
           p_change: change,
           p_change_percent: changePercent,
           p_is_artificial: false,
-          p_source: "alpha_vantage",
+          p_source: "finnhub",
         })
         return { symbol, price, change, change_percent: changePercent }
       } catch (_) {
@@ -99,7 +101,7 @@ export async function GET(request: NextRequest) {
         })
         continue
       }
-      // No cache — try a live quote for the first few symbols
+      // No cache -- try a live quote for the first few symbols
       let filled = null as any
       if (quota > 0) {
         quota--

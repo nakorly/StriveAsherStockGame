@@ -30,7 +30,10 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    const API_KEY = process.env.ALPHA_VANTAGE_API_KEY || "demo"
+    const API_KEY = process.env.FINNHUB_API_KEY
+    if (!API_KEY) {
+      return NextResponse.json({ error: "FINNHUB_API_KEY is not set" }, { status: 500 })
+    }
     let updatedCount = 0
     const errors: string[] = []
 
@@ -47,7 +50,7 @@ export async function POST(request: NextRequest) {
 
         let currentPrice: number
         let stockName: string = item.symbol
-        let priceSource: "artificial" | "alpha_vantage" | "cache_fallback" | "generated" = "generated"
+        let priceSource: "artificial" | "finnhub" | "cache_fallback" | "generated" = "generated"
 
         if (artificialPrice) {
           // Use artificial price
@@ -55,12 +58,13 @@ export async function POST(request: NextRequest) {
           stockName = artificialPrice.name
           priceSource = "artificial"
         } else {
-          // Fetch from Alpha Vantage API
-          const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${item.symbol}&apikey=${API_KEY}`
+          // Fetch from Finnhub API
+          const url = `https://finnhub.io/api/v1/quote?symbol=${item.symbol}&token=${API_KEY}`
           const response = await fetch(url)
           const data = await response.json()
 
-          if (data["Error Message"] || !data["Global Quote"]) {
+          const livePrice = Number(data?.c)
+          if (!response.ok || data?.error || !Number.isFinite(livePrice) || livePrice <= 0) {
             // If API fails, fall back to last cached price or portfolio price, then apply a small drift
             let basePrice = Number(item.price ?? item.purchase_price)
             try {
@@ -82,9 +86,8 @@ export async function POST(request: NextRequest) {
             currentPrice = Math.max(1, Math.round(currentPrice * 10) / 10)
             console.log(`Generated price for ${item.symbol}: $${currentPrice}`)
           } else {
-            const globalQuote = data["Global Quote"]
-            currentPrice = Number.parseFloat(globalQuote["05. price"]) || Number(item.price ?? item.purchase_price)
-            priceSource = "alpha_vantage"
+            currentPrice = livePrice
+            priceSource = "finnhub"
           }
         }
 
