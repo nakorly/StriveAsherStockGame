@@ -123,67 +123,14 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
 
   const loadUsers = async () => {
     try {
-      const { getSupabase } = await import("@/lib/supabase")
-      const supabase = await getSupabase()
+      const res = await fetch("/api/admin-users")
+      const data = await res.json()
 
-      if (!supabase) {
-        throw new Error("Supabase client not available")
+      if (!data?.success) {
+        throw new Error(data?.error || "Failed to load users")
       }
 
-      // Get all users with their profiles and portfolio values
-      const { data: profiles, error: profilesError } = await supabase
-        .from("profiles")
-        .select(`
-          id,
-          balance,
-          username,
-          display_name,
-          created_at
-        `)
-        .order("created_at", { ascending: false })
-
-      if (profilesError) throw profilesError
-
-      // Get admin roles
-      const { data: adminRoles, error: adminError } = await supabase.from("admin_roles").select("user_id, role")
-
-      if (adminError) console.warn("Cannot fetch admin roles:", adminError)
-
-      // Get user emails from auth.users (requires service role key)
-      const { data: authUsers, error: authError } = await supabase.auth.admin.listUsers()
-
-      if (authError) {
-        console.warn("Cannot fetch user emails (requires service role key):", authError)
-      }
-
-      // Get portfolio values
-      const { data: portfolios, error: portfolioError } = await supabase
-        .from("portfolios")
-        .select("user_id, total_value")
-
-      if (portfolioError) throw portfolioError
-
-      // Combine data
-      const usersData =
-        profiles?.map((profile: any) => {
-          const authUser = authUsers?.users.find((u: any) => u.id === profile.id)
-          const userPortfolios = portfolios?.filter((p: any) => p.user_id === profile.id) || []
-          const totalPortfolioValue = userPortfolios.reduce((sum: number, p: any) => sum + (p.total_value || 0), 0)
-          const isAdmin = adminRoles?.some((ar: any) => ar.user_id === profile.id)
-
-          return {
-            id: profile.id,
-            email: authUser?.email || "Unknown",
-            balance: profile.balance,
-            total_value: profile.balance + totalPortfolioValue,
-            created_at: profile.created_at,
-            last_sign_in_at: authUser?.last_sign_in_at || null,
-            is_admin: isAdmin,
-          }
-        }) || []
-
-      usersData.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-      setUsers(usersData)
+      setUsers(data.users || [])
     } catch (err) {
       console.error("Error loading users:", err)
     }
@@ -949,35 +896,45 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                 <CardTitle>Recent Users</CardTitle>
                 <CardDescription>Latest user registrations</CardDescription>
               </CardHeader>
-              <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Email</TableHead>
-                      <TableHead>Total Value</TableHead>
-                      <TableHead>Joined</TableHead>
-                      <TableHead>Status</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {users.slice(0, 5).map((user) => (
-                      <TableRow key={user.id}>
-                        <TableCell>{user.email}</TableCell>
-                        <TableCell>${user.total_value.toLocaleString()}</TableCell>
-                        <TableCell>{new Date(user.created_at).toLocaleDateString()}</TableCell>
-                        <TableCell>
-                          {user.is_admin ? (
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Email</TableHead>
+                        <TableHead>Total Value</TableHead>
+                        <TableHead>Joined</TableHead>
+                        <TableHead>Status</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {users
+                        .filter((u) => {
+                          const createdAt = new Date(u.created_at).getTime()
+                          const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
+                          return createdAt >= weekAgo
+                        })
+                        .slice(0, 5)
+                        .map((user) => (
+                        <TableRow key={user.id}>
+                          <TableCell>{user.email}</TableCell>
+                          <TableCell>${user.total_value.toLocaleString()}</TableCell>
+                          <TableCell>{new Date(user.created_at).toLocaleDateString()}</TableCell>
+                          <TableCell>
+                            {user.is_admin ? (
                             <Badge variant="secondary">Admin</Badge>
                           ) : (
                             <Badge variant="outline">User</Badge>
                           )}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                  {users.filter((u) => new Date(u.created_at).getTime() >= Date.now() - 7 * 24 * 60 * 60 * 1000).length === 0 && (
+                    <div className="text-center py-6 text-sm text-gray-500">No new accounts created in the last 7 days.</div>
+                  )}
+                </CardContent>
+              </Card>
           </div>
         )}
 
