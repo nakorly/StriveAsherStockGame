@@ -52,6 +52,23 @@ export default function LoginPage() {
   // Admin credentials (hidden from UI)
   const ADMIN_EMAIL = "greencheez@proton.me"
 
+  const getPublicSiteUrl = () => {
+    const envUrl = process.env.NEXT_PUBLIC_SITE_URL
+    if (envUrl && envUrl.startsWith("https://")) return envUrl.replace(/\/+$/, "")
+
+    const vercelUrl = process.env.NEXT_PUBLIC_VERCEL_URL
+    if (vercelUrl) {
+      const normalized = vercelUrl.startsWith("http") ? vercelUrl : `https://${vercelUrl}`
+      return normalized.replace(/\/+$/, "")
+    }
+
+    if (typeof window !== "undefined") {
+      return window.location.origin
+    }
+
+    return "https://strive-asher-stock-game.vercel.app"
+  }
+
   const redirectAfterAuth = async (supabase: any, session: any, adminMode: boolean) => {
     if (!session || !session.user) return
 
@@ -417,7 +434,7 @@ export default function LoginPage() {
           email,
           password,
           options: {
-            emailRedirectTo: typeof window !== "undefined" ? `${window.location.origin}` : undefined,
+            emailRedirectTo: getPublicSiteUrl(),
           },
         })
 
@@ -526,7 +543,7 @@ export default function LoginPage() {
       }
 
       const { error } = await supabase.auth.resetPasswordForEmail(resetEmail, {
-        redirectTo: `${typeof window !== "undefined" ? window.location.origin : ""}/reset-password`,
+        redirectTo: `${getPublicSiteUrl()}/reset-password`,
       })
 
       if (error) {
